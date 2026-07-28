@@ -1,0 +1,25 @@
+{
+  "model_size": {
+    "total_params": 2940789,
+    "trainable_params": 2940789,
+    "file_size_mb": 11.458924293518066
+  },
+  "latency_batch1": {
+    "mean_ms": 9.144586986965603,
+    "std_ms": 1.2522855999934035,
+    "min_ms": 7.511615753173828,
+    "max_ms": 14.011144638061523,
+    "batch_size": 1
+  },
+  "latency_batch32": {
+    "mean_ms": 98.80642294883728,
+    "std_ms": 4.5957221936108015,
+    "min_ms": 91.55583381652832,
+    "max_ms": 113.18469047546387,
+    "batch_size": 32
+  },
+  "memory": {
+    "peak_memory_mb": "N/A (CPU)"
+  },
+  "device": "cpu"
+}

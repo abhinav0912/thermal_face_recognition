@@ -1,0 +1,79 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "1. Prepare Data",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/prepare_data.py",
+            "args": [
+                "--rgb_zip",     "RGB-faces-128x128.zip",
+                "--thermal_zip", "thermal-face-128x128.zip",
+                "--out_dir",     "data"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "2. Train Model",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--data_dir",       "data",
+                "--output_dir",     "checkpoints",
+                "--epochs",         "40",
+                "--batch_size",     "32",
+                "--lr",             "1e-3",
+                "--unfreeze_epoch", "10",
+                "--val_split",      "0.15",
+                "--workers",        "4"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "3. Evaluate Model",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/evaluate.py",
+            "args": [
+                "--checkpoint_dir", "checkpoints",
+                "--data_dir",       "data",
+                "--output_dir",     "checkpoints"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "4. Inference – Single Image",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "args": [
+                "--image",          "data/thermal-face-128x128/5-TD-E-3.jpg",
+                "--checkpoint_dir", "checkpoints"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "5. Inference – Interactive Demo",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "args": [
+                "--demo",
+                "--checkpoint_dir", "checkpoints"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "6. Inference – Whole Folder",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "args": [
+                "--folder",         "data/thermal-face-128x128",
+                "--checkpoint_dir", "checkpoints"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}
