@@ -1,0 +1,58 @@
+"""
+camera.py
+=========
+Frame source for the live thermal pipeline.
+
+The FLIR A50 at 169.254.0.82 was confirmed reachable over RTSP at
+rtsp://169.254.0.82:554/avc (see test_camera_connection.py). This wraps
+cv2.VideoCapture with automatic reconnect, since RTSP streams from network
+cameras can drop or stall.
+
+--source also accepts a plain webcam index (e.g. "0") for testing the
+pipeline without the thermal camera attached.
+"""
+
+import time
+
+import cv2
+
+DEFAULT_RTSP_URL = "rtsp://169.254.0.82:554/avc"
+
+
+class ThermalCamera:
+    def __init__(self, source=DEFAULT_RTSP_URL, reconnect_delay: float = 2.0):
+        self.source = _parse_source(source)
+        self.reconnect_delay = reconnect_delay
+        self.cap = None
+        self._open()
+
+    def _open(self):
+        if self.cap is not None:
+            self.cap.release()
+        self.cap = cv2.VideoCapture(self.source)
+        if not self.cap.isOpened():
+            raise ConnectionError(f"Could not open camera source: {self.source}")
+
+    def read(self):
+        """Return (ok, frame_bgr). Attempts one reconnect on failure."""
+        ok, frame = self.cap.read()
+        if not ok:
+            print(f"  [camera] Lost connection, reconnecting to {self.source} ...")
+            time.sleep(self.reconnect_delay)
+            try:
+                self._open()
+                ok, frame = self.cap.read()
+            except ConnectionError:
+                ok, frame = False, None
+        return ok, frame
+
+    def release(self):
+        if self.cap is not None:
+            self.cap.release()
+
+
+def _parse_source(source):
+    """Allow '0', '1', etc. (webcam index) to come through as plain strings from argparse."""
+    if isinstance(source, str) and source.isdigit():
+        return int(source)
+    return source

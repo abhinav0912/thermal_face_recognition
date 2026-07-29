@@ -28,25 +28,15 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, random_split
-from torchvision import models, transforms
+from torchvision import transforms
 from PIL import Image
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import json
 
+from model import DualHeadFaceNet, EXPR_MAP, IMG_SIZE, NUM_EXPRESSIONS
+
 # ─────────────────────────────── CONFIG ──────────────────────────────────────
-
-EXPR_MAP = {
-    "1": "Angry",
-    "2": "Happy",
-    "3": "Neutral",
-    "4": "Sad",
-    "5": "Surprised",
-}
-
-IMG_SIZE = 128
-NUM_PERSONS = 113
-NUM_EXPRESSIONS = 5
 
 
 # ─────────────────────────────── DATASET ─────────────────────────────────────
@@ -109,40 +99,6 @@ class ThermalFaceDataset(Dataset):
         if self.transform:
             img = self.transform(img)
         return img, person_lbl, expr_lbl
-
-
-# ─────────────────────────────── MODEL ───────────────────────────────────────
-
-class DualHeadFaceNet(nn.Module):
-    """
-    MobileNetV2 backbone with two classification heads:
-      • identity_head  -> NUM_PERSONS classes
-      • expression_head -> NUM_EXPRESSIONS classes
-    """
-
-    def __init__(self, num_persons: int, num_expressions: int, dropout: float = 0.4):
-        super().__init__()
-        base = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-        # Remove the original classifier
-        self.backbone = base.features          # output: (B, 1280, 4, 4) for 128×128
-        self.pool = nn.AdaptiveAvgPool2d(1)   # -> (B, 1280, 1, 1)
-
-        feat_dim = 1280
-        self.shared_fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(feat_dim, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-        )
-        self.identity_head = nn.Linear(512, num_persons)
-        self.expression_head = nn.Linear(512, num_expressions)
-
-    def forward(self, x):
-        x = self.backbone(x)
-        x = self.pool(x)
-        feat = self.shared_fc(x)
-        return self.identity_head(feat), self.expression_head(feat)
 
 
 # ─────────────────────────────── TRAINING ────────────────────────────────────
@@ -315,7 +271,8 @@ def main(args):
     model = DualHeadFaceNet(
         num_persons=len(full_ds.person_ids),
         num_expressions=NUM_EXPRESSIONS,
-        dropout=args.dropout
+        dropout=args.dropout,
+        pretrained=True,
     ).to(device)
 
     # ── Optimizer & Scheduler ────────────────────────────────────────────────

@@ -22,60 +22,31 @@ import os
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import models, transforms
 from PIL import Image
 import numpy as np
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Reproduce model class (keep in sync with train.py or import from shared module)
-# ──────────────────────────────────────────────────────────────────────────────
-
-class DualHeadFaceNet(nn.Module):
-    def __init__(self, num_persons: int, num_expressions: int, dropout: float = 0.4):
-        super().__init__()
-        base = models.mobilenet_v2(weights=None)
-        self.backbone = base.features
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        feat_dim = 1280
-        self.shared_fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(feat_dim, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-        )
-        self.identity_head   = nn.Linear(512, num_persons)
-        self.expression_head = nn.Linear(512, num_expressions)
-
-    def forward(self, x):
-        x = self.backbone(x)
-        x = self.pool(x)
-        feat = self.shared_fc(x)
-        return self.identity_head(feat), self.expression_head(feat)
-
+from model import DualHeadFaceNet, EXPR_NAMES, INFERENCE_TRANSFORM
+from person_names import load_names, DEFAULT_NAMES_PATH
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Inference engine
 # ──────────────────────────────────────────────────────────────────────────────
 
-EXPR_NAMES = ["Neutral", "Smile", "Eyes Closed", "Shocked", "Wearing Sunglasses"]
-
-TRANSFORM = transforms.Compose([
-    transforms.Resize((128, 128)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406],
-                         [0.229, 0.224, 0.225]),
-])
+TRANSFORM = INFERENCE_TRANSFORM
 
 
 class FaceRecognizer:
     """Load a trained checkpoint and run inference on thermal images."""
 
-    def __init__(self, checkpoint_dir: str = "checkpoints"):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self, checkpoint_dir: str = "checkpoints", device: str = None,
+                 names_path: str = DEFAULT_NAMES_PATH):
+        if device:
+            self.device = torch.device(device)
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.names = load_names(names_path)
 
         # ── Load label map ───────────────────────────────────────────────────
         lmap_path = os.path.join(checkpoint_dir, "label_map.json")
@@ -110,25 +81,35 @@ class FaceRecognizer:
         print(f"  Persons known : {num_persons}")
         print(f"  Device        : {self.device}\n")
 
-    @torch.no_grad()
+    def display_name(self, person_id: int) -> str:
+        """Human-readable name for a person ID, or a fallback if none is registered."""
+        return self.names.get(person_id, f"Person {person_id}")
+
     def predict(self, image_path: str, top_k: int = 3) -> dict:
+        """Predict from a file on disk. See predict_image() for the return format."""
+        img = Image.open(image_path).convert("RGB")
+        return self.predict_image(img, top_k=top_k)
+
+    @torch.no_grad()
+    def predict_image(self, img: Image.Image, top_k: int = 3) -> dict:
         """
         Parameters
         ----------
-        image_path : str  path to thermal .jpg/.png
-        top_k      : int  number of top-person candidates to return
+        img   : PIL.Image  a face image (thermal), any size — will be resized
+        top_k : int         number of top-person candidates to return
 
         Returns
         -------
         dict with keys:
             person_id   : int   – predicted person ID (1-based)
+            person_name : str   – registered name for that ID (or "Person {id}")
             person_conf : float – confidence (0-1) for that person
             top_persons : list  – [(person_id, confidence), ...]
             expression  : str   – predicted expression name
             expr_conf   : float – confidence (0-1) for that expression
             top_exprs   : list  – [(expr_name, confidence), ...]
         """
-        img = Image.open(image_path).convert("RGB")
+        img = img.convert("RGB")
         tensor = TRANSFORM(img).unsqueeze(0).to(self.device)
 
         id_logits, expr_logits = self.model(tensor)
@@ -153,6 +134,7 @@ class FaceRecognizer:
 
         return {
             "person_id":   person_id,
+            "person_name": self.display_name(person_id),
             "person_conf": person_conf,
             "top_persons": top_persons,
             "expression":  expression,
@@ -166,7 +148,7 @@ def print_result(image_path: str, result: dict):
     bar = "─" * 50
     print(f"\n{bar}")
     print(f"  Image      : {os.path.basename(image_path)}")
-    print(f"  Person ID  : {result['person_id']}  "
+    print(f"  Person     : {result['person_name']}  (ID {result['person_id']})  "
           f"(confidence: {result['person_conf']*100:.1f}%)")
     print(f"  Expression : {result['expression']}  "
           f"(confidence: {result['expr_conf']*100:.1f}%)")
@@ -184,7 +166,7 @@ def print_result(image_path: str, result: dict):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main(args):
-    recognizer = FaceRecognizer(args.checkpoint_dir)
+    recognizer = FaceRecognizer(args.checkpoint_dir, device=args.device)
 
     if args.image:
         result = recognizer.predict(args.image, top_k=3)
@@ -231,5 +213,7 @@ if __name__ == "__main__":
                         help="Interactive CLI demo mode")
     parser.add_argument("--checkpoint_dir", default="checkpoints",
                         help="Directory containing best_model.pth & label_map.json")
+    parser.add_argument("--device", default=None,
+                        help="Force 'cpu' or 'cuda'. Defaults to cuda if available.")
     args = parser.parse_args()
     main(args)

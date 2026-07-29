@@ -13,9 +13,16 @@ Recognize **who** a person is and **what expression** they are making from a **t
 ```
 thermal_face_recognition/
 ├── prepare_data.py      # Extract zip files into data/
+├── model.py             # Shared model definition (DualHeadFaceNet) + label constants
 ├── train.py             # Train the dual-head MobileNetV2 model
 ├── evaluate.py          # Full evaluation + confusion matrices
-├── inference.py         # Predict on new thermal images
+├── inference.py         # Predict on saved thermal images
+├── camera.py            # Frame source for the live pipeline (RTSP, e.g. FLIR A50)
+├── face_detector.py     # Locates/crops a face in a raw live frame
+├── live_inference.py    # Real-time recognition from the live camera feed
+├── collect_data.py      # Capture new labeled thermal faces (video or stills) from the live feed
+├── person_names.py      # person_id <-> name registry (data/person_names.json)
+├── test_camera_connection.py  # One-off probe to find how a camera streams
 ├── requirements.txt
 ├── .vscode/
 │   ├── launch.json      # One-click run configs for VS Code
@@ -134,6 +141,61 @@ Example output:
     Surprised     →   0.8%
 ──────────────────────────────────────────────────
 ```
+
+---
+
+## Live Recognition (FLIR A50)
+
+The A50 streams over RTSP. Confirmed working URL for this setup:
+`rtsp://169.254.0.82:554/avc` (find yours with `test_camera_connection.py --ip <ip>`
+if the camera's IP is different).
+
+```bash
+# Real-time recognition from the live feed (default source is the URL above)
+python live_inference.py
+
+# Or point at a different camera / URL
+python live_inference.py --source rtsp://<camera-ip>:554/avc
+
+# Test the pipeline with a regular webcam before the thermal camera is available
+python live_inference.py --source 0
+```
+
+Each frame is: face-detected (OpenCV Haar cascade + CLAHE contrast boost) →
+cropped → resized to 128×128 → run through the same `DualHeadFaceNet` used
+for static images. A bounding box with the predicted person's **name** +
+expression is drawn over the video window; press `q` to quit. Any face whose
+top match falls below `--unknown_threshold` (default 50%) is labeled
+`Unknown` instead of being forced onto the closest known identity — the
+model is a closed-set classifier over the trained people, so this threshold
+matters for anyone not in the training set. Names come from
+`data/person_names.json` (see below); a person with no registered name falls
+back to `Person {id}`.
+
+### Collecting new training data live
+
+```bash
+python collect_data.py
+```
+
+Prompts for a person ID (existing or new — new IDs are asked for a name,
+which live_inference.py then displays instead of the numeric ID) and a
+capture mode:
+
+- **`v` — video** (recommended): records a short clip (15s by default,
+  `--duration` to change) while the person naturally moves their head and
+  expression. Frames are auto-sampled a few times a second, face-cropped,
+  and saved as training images — this is the fastest way to build up a
+  person's data. The raw clip is also kept in `data/videos/` for reference
+  or re-processing later.
+- **`a` — angle shots**: 9 manually-posed stills, SPACE to capture each.
+- **`e` — expression shots**: 5 manually-posed stills, one per expression.
+
+Either way, images are saved into `data/thermal-face-128x128/` using the
+same `{id}-TD-A-{n}.jpg` / `{id}-TD-E-{1..5}.jpg` convention the original
+dataset uses, so adding a new person is just: collect their data, then
+re-run `python train.py` — `label_map.json` is rebuilt from whatever's on
+disk each run.
 
 ---
 
