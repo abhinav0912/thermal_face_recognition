@@ -12,11 +12,11 @@ IMG_SIZE = 128
 NUM_EXPRESSIONS = 5
 
 EXPR_MAP = {
-    "1": "Angry",
-    "2": "Happy",
-    "3": "Neutral",
-    "4": "Sad",
-    "5": "Surprised",
+    "1": "Neutral",
+    "2": "Smile",
+    "3": "Eyes Closed",
+    "4": "Surprised",
+    "5": "Sunglasses",
 }
 EXPR_NAMES = [EXPR_MAP[str(i + 1)] for i in range(NUM_EXPRESSIONS)]
 

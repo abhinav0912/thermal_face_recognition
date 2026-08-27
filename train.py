@@ -20,8 +20,13 @@ Run:
 import argparse
 import os
 import re
+import sys
 import time
 from pathlib import Path
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
 
 import numpy as np
 import torch
@@ -63,7 +68,7 @@ class ThermalFaceDataset(Dataset):
                       in the expression loss).
     """
 
-    def __init__(self, folder: str, transform=None):
+    def __init__(self, folder: str, transform=None, min_person_id=None, max_person_id=None):
         self.transform = transform
         self.samples = []          # list of (path, person_0idx, expr_0idx_or_-1)
         self.person_ids = []       # sorted list of unique integer person ids
@@ -76,6 +81,10 @@ class ThermalFaceDataset(Dataset):
             if parsed is None:
                 continue
             pid, mode, idx = parsed
+            if min_person_id is not None and pid < min_person_id:
+                continue
+            if max_person_id is not None and pid > max_person_id:
+                continue
             all_ids.add(pid)
             raw.append((img_path, pid, mode, idx))
 
@@ -129,7 +138,7 @@ def accuracy(logits, labels, mask=None):
     return (preds == labels).float().mean().item()
 
 
-def train_one_epoch(model, loader, optimizer, scheduler, device):
+def train_one_epoch(model, loader, optimizer, scheduler, device, lambda_expr=0.5):
     model.train()
     total_loss = id_acc_sum = expr_acc_sum = n = 0
 
@@ -141,7 +150,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, device):
         id_logits, expr_logits = model(imgs)
         loss, _, _ = compute_loss(
             id_logits, expr_logits, id_lbl, expr_lbl,
-            nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
+            nn.CrossEntropyLoss(), nn.CrossEntropyLoss(), lambda_expr=lambda_expr
         )
 
         optimizer.zero_grad()
@@ -159,7 +168,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, lambda_expr=0.5):
     model.eval()
     total_loss = id_acc_sum = expr_acc_sum = n = 0
 
@@ -174,7 +183,7 @@ def evaluate(model, loader, device):
         id_logits, expr_logits = model(imgs)
         loss, _, _ = compute_loss(
             id_logits, expr_logits, id_lbl, expr_lbl,
-            nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
+            nn.CrossEntropyLoss(), nn.CrossEntropyLoss(), lambda_expr=lambda_expr
         )
 
         mask = expr_lbl >= 0
@@ -243,7 +252,11 @@ def main(args):
 
     # ── Dataset ──────────────────────────────────────────────────────────────
     thermal_dir = os.path.join(args.data_dir, "thermal-face-128x128")
-    full_ds = ThermalFaceDataset(thermal_dir, transform=train_tf)
+    full_ds = ThermalFaceDataset(thermal_dir, transform=train_tf,
+                                 min_person_id=args.min_person_id,
+                                 max_person_id=args.max_person_id)
+
+    lambda_expr = 0.0 if args.identity_only else 0.5
 
     n_total = len(full_ds)
     n_val   = int(n_total * args.val_split)
@@ -312,9 +325,9 @@ def main(args):
 
         t0 = time.time()
         tr_loss, tr_id, tr_ex = train_one_epoch(
-            model, train_loader, optimizer, scheduler, device)
+            model, train_loader, optimizer, scheduler, device, lambda_expr=lambda_expr)
         vl_loss, vl_id, vl_ex, \
-        id_preds, id_true, ex_preds, ex_true = evaluate(model, val_loader, device)
+        id_preds, id_true, ex_preds, ex_true = evaluate(model, val_loader, device, lambda_expr=lambda_expr)
 
         history["train_loss"].append(tr_loss)
         history["val_loss"].append(vl_loss)
@@ -341,10 +354,11 @@ def main(args):
             print(f"  ✓ Saved best model (val ID acc={vl_id:.4f})")
 
     # ── Final report ─────────────────────────────────────────────────────────
-    print("\n── Expression Classification Report (val set) ──")
-    expr_names = [EXPR_MAP[str(i+1)] for i in range(NUM_EXPRESSIONS)]
-    if ex_true:
-        print(classification_report(ex_true, ex_preds, target_names=expr_names))
+    if not args.identity_only:
+        print("\n── Expression Classification Report (val set) ──")
+        expr_names = [EXPR_MAP[str(i+1)] for i in range(NUM_EXPRESSIONS)]
+        if ex_true:
+            print(classification_report(ex_true, ex_preds, target_names=expr_names))
 
     plot_history(history, os.path.join(args.output_dir, "training_curves.png"))
     print(f"\n  Best Val Identity Accuracy : {best_val_id_acc:.4f}")
@@ -366,5 +380,11 @@ if __name__ == "__main__":
     parser.add_argument("--unfreeze_epoch",type=int, default=10,
                         help="Epoch at which to unfreeze the backbone")
     parser.add_argument("--workers",       type=int, default=4)
+    parser.add_argument("--min_person_id", type=int, default=None,
+                        help="Only train on person IDs >= this value")
+    parser.add_argument("--max_person_id", type=int, default=None,
+                        help="Only train on person IDs <= this value")
+    parser.add_argument("--identity_only", action="store_true",
+                        help="Skip the expression loss/report and train the identity head only")
     args = parser.parse_args()
     main(args)

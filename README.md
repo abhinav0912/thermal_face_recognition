@@ -4,7 +4,7 @@ Recognize **who** a person is and **what expression** they are making from a **t
 
 - **113 people**, 9 angle shots + 5 expression shots each  
 - **Input**: single thermal `.jpg` image (128 × 128)  
-- **Output**: Person ID (1–113) + Expression (Angry / Happy / Neutral / Sad / Surprised)
+- **Output**: Person ID (1–113) + Expression (Neutral / Smile / Eyes Closed / Surprised / Sunglasses)
 
 ---
 
@@ -135,9 +135,9 @@ Example output:
 
   All expressions:
     Neutral       →  87.2%
-    Happy         →   7.1%
-    Sad           →   3.1%
-    Angry         →   1.8%
+    Smile         →   7.1%
+    Eyes Closed   →   3.1%
+    Sunglasses    →   1.8%
     Surprised     →   0.8%
 ──────────────────────────────────────────────────
 ```
@@ -210,11 +210,11 @@ Expression index mapping:
 
 | Index | Expression |
 |---|---|
-| 1 | Angry |
-| 2 | Happy |
-| 3 | Neutral |
-| 4 | Sad |
-| 5 | Surprised |
+| 1 | Neutral |
+| 2 | Smile |
+| 3 | Eyes Closed |
+| 4 | Surprised |
+| 5 | Sunglasses |
 
 ---
 

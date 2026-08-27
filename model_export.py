@@ -25,11 +25,11 @@ from torchvision import models
 import numpy as np
 
 EXPR_MAP = {
-    "1": "Angry",
-    "2": "Happy",
-    "3": "Neutral",
-    "4": "Sad",
-    "5": "Surprised",
+    "1": "Neutral",
+    "2": "Smile",
+    "3": "Eyes Closed",
+    "4": "Surprised",
+    "5": "Sunglasses",
 }
 
 
@@ -281,7 +281,7 @@ with torch.no_grad():
     identity = id_logits.argmax(1).item() + 1  # Person ID
     expression = F.softmax(expr_logits, dim=1)[0].argmax().item()
 
-print(f"Person: {identity}, Expression: {['Angry', 'Happy', 'Neutral', 'Sad', 'Surprised'][expression]}")
+print(f"Person: {identity}, Expression: {['Neutral', 'Smile', 'Eyes Closed', 'Surprised', 'Sunglasses'][expression]}")
 '''
         
         code_onnx = '''"""
@@ -313,7 +313,7 @@ id_logits, expr_logits = outputs
 identity = np.argmax(id_logits[0]) + 1
 expression = np.argmax(expr_logits[0])
 
-print(f"Person: {identity}, Expression: {['Angry', 'Happy', 'Neutral', 'Sad', 'Surprised'][expression]}")
+print(f"Person: {identity}, Expression: {['Neutral', 'Smile', 'Eyes Closed', 'Surprised', 'Sunglasses'][expression]}")
 '''
         
         pytorch_path = os.path.join(self.export_dir, "inference_pytorch.py")

@@ -3,7 +3,7 @@ inference.py
 ============
 Given a thermal face image (path or directory), predicts:
   • Person identity  (person ID 1–113)
-  • Facial expression (Angry / Happy / Neutral / Sad / Surprised)
+  • Facial expression (Neutral / Smile / Eyes Closed / Surprised / Sunglasses)
 
 Usage:
     # Single image
