@@ -122,29 +122,74 @@ def _next_angle_index(out_dir, person_id):
     return max_idx + 1
 
 
+def wait_for_start(camera, detector, window_name, timeout_sec: float = 20.0):
+    """
+    Live preview so the person can be positioned in frame before recording
+    starts. Returns True on SPACE (start), False on 'q' (cancel) or timeout.
+    """
+    last_frame_time = time.time()
+    while True:
+        ok, frame = camera.read()
+        if not ok or frame is None:
+            if time.time() - last_frame_time > timeout_sec:
+                print(f"  No frame received after {timeout_sec:.0f}s — aborting. "
+                      "Check the camera/RTSP connection (see any decode errors above).")
+                return False
+            continue
+        last_frame_time = time.time()
+
+        boxes = detector.detect(frame)
+        display = frame.copy()
+        if boxes:
+            x, y, w, h = boxes[0]
+            cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        else:
+            cv2.putText(display, "No face detected", (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        cv2.putText(display, "Position the face in frame. SPACE = start recording, q = cancel",
+                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+        cv2.imshow(window_name, display)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord(" "):
+            return True
+        if key == ord("q"):
+            print("  Cancelled.")
+            return False
+
+
+def _smooth_box(prev, new, alpha: float = 0.3):
+    """Exponential moving average between two (x, y, w, h) boxes."""
+    if prev is None:
+        return new
+    return tuple(int(alpha * n + (1 - alpha) * p) for p, n in zip(prev, new))
+
+
 def run_video_session(camera, detector, out_dir, person_id, video_dir,
                        duration_sec: float = 15.0, sample_fps: float = 4.0):
     """
-    Records a short video of the person (saved to video_dir for reference),
-    while sampling frames from it at ~sample_fps, face-cropping each one,
-    and adding them to the training set as new angle-shot images.
+    Shows a live preview to position the person, then (on SPACE) records a
+    short video (saved to video_dir for reference) while sampling frames
+    from it at ~sample_fps, face-cropping each one, and adding them to the
+    training set as new angle-shot images.
+
+    The crop box is smoothed across sampled frames (see _smooth_box) rather
+    than trusting each frame's raw Haar-cascade detection in isolation —
+    without that, normal frame-to-frame detection jitter makes consecutive
+    saved frames look inconsistently "zoomed" even when the person barely
+    moved, since each one gets cropped to whatever box that frame's
+    detection happened to find and then resized to a fixed 128x128.
     """
     print(f"\n-- Video capture ({duration_sec:.0f}s) -- "
           f"slowly turn your head left/right/up/down, and vary expression --")
-    input("  Press Enter when ready to start recording...")
 
-    print("  Waiting for a frame from the camera...")
-    wait_start = time.time()
+    window_name = "Collect: Video"
+    if not wait_for_start(camera, detector, window_name):
+        return
+
     ok, frame = camera.read()
-    attempts = 0
     while not ok or frame is None:
-        attempts += 1
-        if time.time() - wait_start > 20:
-            print("  No frame received after 20s — aborting this session. "
-                  "Check the camera/RTSP connection (see the errors, if any, above).")
-            return
-        if attempts % 5 == 0:
-            print(f"  Still waiting ({time.time() - wait_start:.0f}s)...")
         ok, frame = camera.read()
     h, w = frame.shape[:2]
 
@@ -157,6 +202,7 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
     saved = 0
     frame_interval = max(1, round(record_fps / sample_fps))
     frame_i = 0
+    smoothed_box = None
     t0 = time.time()
 
     while time.time() - t0 < duration_sec:
@@ -171,14 +217,16 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         cv2.putText(display, f"Frames saved: {saved}",
                     (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.imshow("Collect: Video", display)
+        cv2.imshow(window_name, display)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
         if frame_i % frame_interval == 0:
             boxes = detector.detect(frame)
             if boxes:
-                crop = detector.crop(frame, boxes[0])
+                smoothed_box = _smooth_box(smoothed_box, boxes[0])
+            if smoothed_box is not None:
+                crop = detector.crop(frame, smoothed_box)
                 if crop.size > 0:
                     resized = cv2.resize(crop, (IMG_SIZE, IMG_SIZE))
                     fname = f"{person_id}-TD-A-{start_idx + saved}.jpg"
@@ -187,7 +235,7 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
         frame_i += 1
 
     writer.release()
-    cv2.destroyWindow("Collect: Video")
+    cv2.destroyWindow(window_name)
     print(f"  Saved video: {video_path}")
     print(f"  Extracted {saved} training frames "
           f"({person_id}-TD-A-{start_idx}.jpg .. {person_id}-TD-A-{start_idx + max(saved - 1, 0)}.jpg)")

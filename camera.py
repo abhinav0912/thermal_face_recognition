@@ -12,7 +12,15 @@ cameras can drop or stall.
 pipeline without the thermal camera attached.
 """
 
+import os
 import time
+
+# Must be set before any cv2.VideoCapture(...) call that opens an RTSP URL.
+# OpenCV's FFmpeg backend defaults to UDP for RTSP, which silently drops lost
+# packets and corrupts frames mid-decode (visible as "corrupted macroblock" /
+# "error while decoding MB" spam from FFmpeg). TCP retransmits instead, which
+# fixes that at the cost of slightly higher latency on a lossy link.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
 import cv2
 
