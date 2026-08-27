@@ -20,7 +20,7 @@ import cv2
 
 
 class ThermalFaceDetector:
-    def __init__(self, min_size=(60, 60), scale_factor: float = 1.1, min_neighbors: int = 5):
+    def __init__(self, min_size=(60, 60), scale_factor: float = 1.1, min_neighbors: int = 8):
         cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         self.cascade = cv2.CascadeClassifier(cascade_path)
         if self.cascade.empty():
