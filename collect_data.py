@@ -230,6 +230,8 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
     saved = 0
     frame_interval = max(1, round(record_fps / sample_fps))
     frame_i = 0
+    reject_streak = 0
+    REJECT_STREAK_LIMIT = 3  # accept the next detection outright after this many rejections in a row
     t0 = time.time()
 
     while time.time() - t0 < duration_sec:
@@ -250,8 +252,19 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
 
         if frame_i % frame_interval == 0:
             boxes = detector.detect(frame)
-            if boxes and _is_plausible_update(smoothed_box, boxes[0]):
-                smoothed_box = _smooth_box(smoothed_box, boxes[0])
+            if boxes:
+                if _is_plausible_update(smoothed_box, boxes[0]):
+                    smoothed_box = _smooth_box(smoothed_box, boxes[0])
+                    reject_streak = 0
+                else:
+                    reject_streak += 1
+                    if reject_streak >= REJECT_STREAK_LIMIT:
+                        # Several detections in a row disagree with the tracked box —
+                        # the tracker is more likely stuck on a wrong lock than the
+                        # detections are all flukes, so snap to the new detection
+                        # instead of continuing to reject it forever.
+                        smoothed_box = boxes[0]
+                        reject_streak = 0
             if smoothed_box is not None:
                 crop = detector.crop(frame, smoothed_box)
                 if crop.size > 0:
