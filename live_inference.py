@@ -3,6 +3,12 @@ live_inference.py
 ==================
 Real-time thermal face recognition from a live camera feed.
 
+Tracks one primary face at a time (via FaceTracker, see face_detector.py)
+rather than classifying whatever the Haar cascade finds on every single
+frame — that stops one glitchy frame from producing a confidently-labeled
+box on something that isn't actually a face. If multiple people are ever in
+frame simultaneously, only the primary tracked face gets recognized.
+
 Usage:
     # Default: FLIR A50 over RTSP
     python live_inference.py
@@ -23,7 +29,7 @@ import cv2
 from PIL import Image
 
 from camera import ThermalCamera, DEFAULT_RTSP_URL
-from face_detector import ThermalFaceDetector
+from face_detector import ThermalFaceDetector, FaceTracker
 from inference import FaceRecognizer
 
 WINDOW_NAME = "Thermal Face Recognition"
@@ -42,6 +48,7 @@ def run(args):
     print("Loading model ...")
     recognizer = FaceRecognizer(args.checkpoint_dir, device=args.device)
     detector = ThermalFaceDetector()
+    tracker = FaceTracker()
     camera = ThermalCamera(source=args.source)
 
     print("Starting live feed. Press 'q' to quit.\n")
@@ -56,23 +63,25 @@ def run(args):
                 time.sleep(0.5)
                 continue
 
-            boxes = detector.detect(frame)
-            for box in boxes[:args.max_faces]:
+            # Tracked, not raw per-frame detection: a single glitchy frame
+            # (thermal texture on skin/clothing that coincidentally matches
+            # the Haar cascade's pattern) would otherwise produce a
+            # confidently-labeled box on something that isn't a face at all.
+            box = tracker.update(detector.detect(frame))
+            if box is not None:
                 crop = detector.crop(frame, box)
-                if crop.size == 0:
-                    continue
+                if crop.size > 0:
+                    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(crop_rgb)
+                    result = recognizer.predict_image(pil_img, top_k=1)
 
-                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(crop_rgb)
-                result = recognizer.predict_image(pil_img, top_k=1)
+                    if result["person_conf"] < args.unknown_threshold:
+                        person_label = "Unknown"
+                    else:
+                        person_label = f"{result['person_name']} ({result['person_conf']*100:.0f}%)"
+                    expr_label = f"{result['expression']} ({result['expr_conf']*100:.0f}%)"
 
-                if result["person_conf"] < args.unknown_threshold:
-                    person_label = "Unknown"
-                else:
-                    person_label = f"{result['person_name']} ({result['person_conf']*100:.0f}%)"
-                expr_label = f"{result['expression']} ({result['expr_conf']*100:.0f}%)"
-
-                annotate(frame, box, person_label, expr_label)
+                    annotate(frame, box, person_label, expr_label)
 
             frame_count += 1
             if frame_count % 30 == 0:
@@ -92,8 +101,6 @@ if __name__ == "__main__":
     parser.add_argument("--source", default=DEFAULT_RTSP_URL,
                         help="RTSP URL, or a webcam index (e.g. 0) for testing")
     parser.add_argument("--checkpoint_dir", default="checkpoints")
-    parser.add_argument("--max_faces", type=int, default=3,
-                        help="Max number of faces to recognize per frame")
     parser.add_argument("--unknown_threshold", type=float, default=0.5,
                         help="Below this person-confidence, label as 'Unknown' "
                              "instead of forcing a match to a known identity")

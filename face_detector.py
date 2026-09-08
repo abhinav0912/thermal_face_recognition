@@ -54,3 +54,78 @@ class ThermalFaceDetector:
         x1 = min(w_img, x + w + mx)
         y1 = min(h_img, y + h + my)
         return frame_bgr[y0:y1, x0:x1]
+
+
+class FaceTracker:
+    """
+    Temporally stabilizes a ThermalFaceDetector's raw per-frame detections
+    for one primary face, instead of trusting each frame's raw detection in
+    isolation. Two problems this fixes:
+
+      1. Normal jitter: even on a genuine face, the cascade's box wobbles a
+         bit frame to frame (thermal contrast noise, tiny pose shifts) —
+         smoothed via an exponential moving average.
+      2. Outright false positives: the cascade occasionally locks onto a
+         region that isn't a face at all (a warm patch of skin/clothing
+         happens to match the cascade's pattern), which is not "jitter" —
+         it's a different target entirely, and blending it into the average
+         would drag the tracked box away from the real face. Such jumps are
+         rejected outright, unless several land in a row (self.reject_streak
+         reaches reject_streak_limit), in which case the tracker assumes its
+         own lock is the one that's wrong and snaps to the new detection.
+
+    Used by both collect_data.py (so saved training frames stay consistently
+    framed) and live_inference.py (so a single bad frame doesn't produce a
+    confident identity guess on a garbage crop — see run_video_session /
+    live_inference.py's run() for how each wires this in).
+    """
+
+    def __init__(self, alpha: float = 0.3, max_center_frac: float = 0.6,
+                 reject_streak_limit: int = 3):
+        self.alpha = alpha
+        self.max_center_frac = max_center_frac
+        self.reject_streak_limit = reject_streak_limit
+        self.box = None
+        self.reject_streak = 0
+
+    def update(self, boxes):
+        """
+        boxes: this frame's detector.detect() output (largest first), or [].
+        Returns the current tracked box (x, y, w, h), or None if no face has
+        ever been locked onto yet.
+        """
+        if not boxes:
+            return self.box
+
+        candidate = boxes[0]
+        if self.box is None or self._is_plausible(candidate):
+            self.box = self._smooth(self.box, candidate)
+            self.reject_streak = 0
+        else:
+            self.reject_streak += 1
+            if self.reject_streak >= self.reject_streak_limit:
+                self.box = candidate
+                self.reject_streak = 0
+        return self.box
+
+    def reset(self):
+        """Start tracking fresh (e.g. at the beginning of a new session)."""
+        self.box = None
+        self.reject_streak = 0
+
+    def _smooth(self, prev, new):
+        if prev is None:
+            return new
+        return tuple(int(self.alpha * n + (1 - self.alpha) * p) for p, n in zip(prev, new))
+
+    def _is_plausible(self, candidate):
+        scale = max(self.box[2], self.box[3])
+        return self._center_distance(self.box, candidate) <= self.max_center_frac * scale
+
+    @staticmethod
+    def _center_distance(a, b):
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        acx, acy = ax + aw / 2, ay + ah / 2
+        bcx, bcy = bx + bw / 2, by + bh / 2
+        return ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5
