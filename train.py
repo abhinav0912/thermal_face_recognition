@@ -1,11 +1,15 @@
 """
 train.py
 ========
-Trains two models:
-  1. Identity model  – who is the person?   (113-class classifier)
-  2. Expression model – what is the expression? (5-class classifier)
+Trains the identity model – who is the person? (num_persons-class classifier).
 
-Both models share a MobileNetV2 backbone fine-tuned on the THERMAL images only.
+Expression ("what is the expression?") training is disabled for now (not a
+current focus -- revisit next month); search for "expression disabled" in
+this file for the commented-out pieces. The model still has an
+expression_head (see model.py) so existing checkpoints keep loading, it's
+just not part of the loss/reporting anymore.
+
+The backbone is a MobileNetV2 fine-tuned on the THERMAL images only.
 RGB images are used solely during pre-training feature alignment (optional toggle).
 
 Dataset folder layout expected after extraction:
@@ -106,18 +110,23 @@ class ThermalFaceDataset(Dataset):
 def compute_loss(id_logits, expr_logits, id_labels, expr_labels,
                  id_criterion, expr_criterion, lambda_expr=0.5):
     """
-    Combined loss. Expression loss is computed only on images that have
-    expression labels (expr_label >= 0).
+    Identity loss only for now -- expression is not being trained/used
+    (commented out below; revisit next month). expression_head still exists
+    on the model (see model.py) so existing checkpoints keep loading, it's
+    just not part of the loss anymore.
     """
     id_loss = id_criterion(id_logits, id_labels)
 
-    mask = expr_labels >= 0
-    if mask.sum() > 0:
-        expr_loss = expr_criterion(expr_logits[mask], expr_labels[mask])
-    else:
-        expr_loss = torch.tensor(0.0, device=id_logits.device)
+    # -- Expression loss disabled --------------------------------------
+    # mask = expr_labels >= 0
+    # if mask.sum() > 0:
+    #     expr_loss = expr_criterion(expr_logits[mask], expr_labels[mask])
+    # else:
+    #     expr_loss = torch.tensor(0.0, device=id_logits.device)
+    expr_loss = torch.tensor(0.0, device=id_logits.device)
 
-    return id_loss + lambda_expr * expr_loss, id_loss.item(), expr_loss.item()
+    # return id_loss + lambda_expr * expr_loss, id_loss.item(), expr_loss.item()
+    return id_loss, id_loss.item(), expr_loss.item()
 
 
 def accuracy(logits, labels, mask=None):
@@ -148,10 +157,10 @@ def train_one_epoch(model, loader, optimizer, scheduler, device):
         loss.backward()
         optimizer.step()
 
-        mask = expr_lbl >= 0
+        # mask = expr_lbl >= 0
         total_loss  += loss.item()
         id_acc_sum  += accuracy(id_logits, id_lbl)
-        expr_acc_sum += accuracy(expr_logits, expr_lbl, mask)
+        # expr_acc_sum += accuracy(expr_logits, expr_lbl, mask)  # expression disabled
         n += 1
 
     scheduler.step()
@@ -177,24 +186,24 @@ def evaluate(model, loader, device):
             nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
         )
 
-        mask = expr_lbl >= 0
+        # mask = expr_lbl >= 0
         total_loss  += loss.item()
         id_acc_sum  += accuracy(id_logits, id_lbl)
-        expr_acc_sum += accuracy(expr_logits, expr_lbl, mask)
+        # expr_acc_sum += accuracy(expr_logits, expr_lbl, mask)  # expression disabled
         n += 1
 
         all_id_preds.extend(id_logits.argmax(1).cpu().numpy())
         all_id_true.extend(id_lbl.cpu().numpy())
-        if mask.sum() > 0:
-            all_ex_preds.extend(expr_logits[mask].argmax(1).cpu().numpy())
-            all_ex_true.extend(expr_lbl[mask].cpu().numpy())
+        # if mask.sum() > 0:
+        #     all_ex_preds.extend(expr_logits[mask].argmax(1).cpu().numpy())
+        #     all_ex_true.extend(expr_lbl[mask].cpu().numpy())
 
     return (total_loss / n, id_acc_sum / n, expr_acc_sum / n,
             all_id_preds, all_id_true, all_ex_preds, all_ex_true)
 
 
 def plot_history(history: dict, save_path: str):
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
     axes[0].plot(history["train_loss"], label="Train")
     axes[0].plot(history["val_loss"],   label="Val")
     axes[0].set_title("Loss"); axes[0].legend()
@@ -203,9 +212,10 @@ def plot_history(history: dict, save_path: str):
     axes[1].plot(history["val_id_acc"],   label="Val")
     axes[1].set_title("Identity Accuracy"); axes[1].legend()
 
-    axes[2].plot(history["train_expr_acc"], label="Train")
-    axes[2].plot(history["val_expr_acc"],   label="Val")
-    axes[2].set_title("Expression Accuracy"); axes[2].legend()
+    # -- Expression accuracy plot disabled --------------------------------
+    # axes[2].plot(history["train_expr_acc"], label="Train")
+    # axes[2].plot(history["val_expr_acc"],   label="Val")
+    # axes[2].set_title("Expression Accuracy"); axes[2].legend()
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=120)
@@ -287,8 +297,8 @@ def main(args):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     history = {k: [] for k in
-               ["train_loss","val_loss","train_id_acc","val_id_acc",
-                "train_expr_acc","val_expr_acc"]}
+               ["train_loss","val_loss","train_id_acc","val_id_acc"]}
+               # "train_expr_acc","val_expr_acc"  -- expression disabled
 
     best_val_id_acc = 0.0
     unfreeze_done = False
@@ -320,14 +330,14 @@ def main(args):
         history["val_loss"].append(vl_loss)
         history["train_id_acc"].append(tr_id)
         history["val_id_acc"].append(vl_id)
-        history["train_expr_acc"].append(tr_ex)
-        history["val_expr_acc"].append(vl_ex)
+        # history["train_expr_acc"].append(tr_ex)  -- expression disabled
+        # history["val_expr_acc"].append(vl_ex)
 
         elapsed = time.time() - t0
         print(f"Epoch {epoch:3d}/{args.epochs} | "
               f"Loss {tr_loss:.3f}/{vl_loss:.3f} | "
               f"ID-Acc {tr_id:.3f}/{vl_id:.3f} | "
-              f"Expr-Acc {tr_ex:.3f}/{vl_ex:.3f} | "
+              # f"Expr-Acc {tr_ex:.3f}/{vl_ex:.3f} | "  -- expression disabled
               f"{elapsed:.1f}s")
 
         if vl_id > best_val_id_acc:
@@ -341,10 +351,11 @@ def main(args):
             print(f"  ✓ Saved best model (val ID acc={vl_id:.4f})")
 
     # ── Final report ─────────────────────────────────────────────────────────
-    print("\n── Expression Classification Report (val set) ──")
-    expr_names = [EXPR_MAP[str(i+1)] for i in range(NUM_EXPRESSIONS)]
-    if ex_true:
-        print(classification_report(ex_true, ex_preds, target_names=expr_names))
+    # -- Expression report disabled ---------------------------------------
+    # print("\n── Expression Classification Report (val set) ──")
+    # expr_names = [EXPR_MAP[str(i+1)] for i in range(NUM_EXPRESSIONS)]
+    # if ex_true:
+    #     print(classification_report(ex_true, ex_preds, target_names=expr_names))
 
     plot_history(history, os.path.join(args.output_dir, "training_curves.png"))
     print(f"\n  Best Val Identity Accuracy : {best_val_id_acc:.4f}")
