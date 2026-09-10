@@ -36,7 +36,7 @@ import time
 import cv2
 
 from camera import ThermalCamera, DEFAULT_RTSP_URL
-from face_detector import ThermalFaceDetector
+from face_detector import ThermalFaceDetector, FaceTracker
 from model import EXPR_NAMES
 from person_names import load_names, set_name, DEFAULT_NAMES_PATH
 
@@ -122,30 +122,30 @@ def _next_angle_index(out_dir, person_id):
     return max_idx + 1
 
 
-def wait_for_start(camera, detector, window_name, timeout_sec: float = 20.0):
+def wait_for_start(camera, detector, tracker, window_name, timeout_sec: float = 20.0):
     """
     Live preview so the person can be positioned in frame before recording
-    starts. Returns (True, last_seen_box) on SPACE, (False, None) on 'q' or
-    timeout. The returned box seeds the recording-phase tracker so it starts
-    from a position the person could already see looked correct.
+    starts, feeding detections into `tracker` the whole time. Returns True
+    on SPACE (start), False on 'q' (cancel) or timeout. Recording then
+    reuses the same tracker, so it starts already locked onto whatever
+    position the person could see looked correct in the preview, instead
+    of starting cold.
     """
     last_frame_time = time.time()
-    last_box = None
     while True:
         ok, frame = camera.read()
         if not ok or frame is None:
             if time.time() - last_frame_time > timeout_sec:
                 print(f"  No frame received after {timeout_sec:.0f}s — aborting. "
                       "Check the camera/RTSP connection (see any decode errors above).")
-                return False, None
+                return False
             continue
         last_frame_time = time.time()
 
-        boxes = detector.detect(frame)
+        box = tracker.update(detector.detect(frame))
         display = frame.copy()
-        if boxes:
-            last_box = boxes[0]
-            x, y, w, h = last_box
+        if box:
+            x, y, w, h = box
             cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
         else:
             cv2.putText(display, "No face detected", (10, 55),
@@ -157,39 +157,10 @@ def wait_for_start(camera, detector, window_name, timeout_sec: float = 20.0):
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord(" "):
-            return True, last_box
+            return True
         if key == ord("q"):
             print("  Cancelled.")
-            return False, None
-
-
-def _smooth_box(prev, new, alpha: float = 0.3):
-    """Exponential moving average between two (x, y, w, h) boxes."""
-    if prev is None:
-        return new
-    return tuple(int(alpha * n + (1 - alpha) * p) for p, n in zip(prev, new))
-
-
-def _box_center_distance(a, b):
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    acx, acy = ax + aw / 2, ay + ah / 2
-    bcx, bcy = bx + bw / 2, by + bh / 2
-    return ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5
-
-
-def _is_plausible_update(tracked_box, candidate_box, max_center_frac: float = 0.6):
-    """
-    Reject a new detection that's too far from where the tracked box
-    currently is — Haar occasionally locks onto a wrong region entirely
-    (hairline texture, chin, background) rather than just being slightly
-    off on the real face, and blending that in drags the crop away from
-    the actual face instead of merely smoothing normal jitter.
-    """
-    if tracked_box is None:
-        return True
-    scale = max(tracked_box[2], tracked_box[3])
-    return _box_center_distance(tracked_box, candidate_box) <= max_center_frac * scale
+            return False
 
 
 def run_video_session(camera, detector, out_dir, person_id, video_dir,
@@ -200,20 +171,19 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
     from it at ~sample_fps, face-cropping each one, and adding them to the
     training set as new angle-shot images.
 
-    The crop box is smoothed across sampled frames and seeded from the
-    preview-phase detection (see _smooth_box / _is_plausible_update) rather
-    than trusting each frame's raw Haar-cascade detection in isolation —
-    without that, normal frame-to-frame detection jitter makes consecutive
-    saved frames look inconsistently "zoomed", and occasional wildly wrong
-    detections (hairline, chin, background mistaken for a face) drag the
-    crop away from the actual face entirely.
+    Uses a FaceTracker (see face_detector.py) rather than trusting each
+    frame's raw Haar-cascade detection in isolation — without that, normal
+    frame-to-frame detection jitter makes consecutive saved frames look
+    inconsistently "zoomed", and occasional wildly wrong detections
+    (hairline, chin, background mistaken for a face) drag the crop away
+    from the actual face entirely.
     """
     print(f"\n-- Video capture ({duration_sec:.0f}s) -- "
           f"slowly turn your head left/right/up/down, and vary expression --")
 
     window_name = "Collect: Video"
-    started, smoothed_box = wait_for_start(camera, detector, window_name)
-    if not started:
+    tracker = FaceTracker()
+    if not wait_for_start(camera, detector, tracker, window_name):
         return
 
     ok, frame = camera.read()
@@ -249,11 +219,9 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
             break
 
         if frame_i % frame_interval == 0:
-            boxes = detector.detect(frame)
-            if boxes and _is_plausible_update(smoothed_box, boxes[0]):
-                smoothed_box = _smooth_box(smoothed_box, boxes[0])
-            if smoothed_box is not None:
-                crop = detector.crop(frame, smoothed_box)
+            box = tracker.update(detector.detect(frame))
+            if box is not None:
+                crop = detector.crop(frame, box)
                 if crop.size > 0:
                     resized = cv2.resize(crop, (IMG_SIZE, IMG_SIZE))
                     fname = f"{person_id}-TD-A-{start_idx + saved}.jpg"
