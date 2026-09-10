@@ -142,6 +142,17 @@ class FaceRecognizer:
             "top_exprs":   top_exprs,
         }
 
+    @torch.no_grad()
+    def embed_image(self, img: Image.Image):
+        """
+        512-dim feature vector for a face image, for gallery.py's
+        similarity-based matching — bypasses both classification heads
+        entirely. See DualHeadFaceNet.get_embedding for caveats.
+        """
+        img = img.convert("RGB")
+        tensor = TRANSFORM(img).unsqueeze(0).to(self.device)
+        return self.model.get_embedding(tensor)[0].cpu().numpy()
+
 
 def print_result(image_path: str, result: dict):
     """Pretty-print a single prediction result."""
