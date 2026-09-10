@@ -37,7 +37,17 @@ class ThermalCamera:
     def _open(self):
         if self.cap is not None:
             self.cap.release()
-        self.cap = cv2.VideoCapture(self.source)
+        if isinstance(self.source, str):
+            # Force the FFmpeg backend explicitly for URL sources (RTSP etc).
+            # Without this, OpenCV auto-picks a backend, and on some
+            # opencv-python builds/platforms that pick isn't guaranteed to be
+            # FFmpeg -- in which case OPENCV_FFMPEG_CAPTURE_OPTIONS above
+            # (rtsp_transport;tcp) silently does nothing, since it's read by
+            # the FFmpeg backend specifically.
+            self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+        else:
+            # A webcam index needs the platform's normal camera backend, not FFmpeg.
+            self.cap = cv2.VideoCapture(self.source)
         if not self.cap.isOpened():
             raise ConnectionError(f"Could not open camera source: {self.source}")
 
