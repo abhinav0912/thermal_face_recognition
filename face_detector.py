@@ -44,15 +44,26 @@ class ThermalFaceDetector:
         return [tuple(map(int, b)) for b in faces]
 
     @staticmethod
-    def crop(frame_bgr, box, margin: float = 0.2):
-        """Crop a box out of the frame with extra margin, clipped to frame bounds."""
+    def crop(frame_bgr, box, margin: float = 0.2, bottom_margin: float = 0.45):
+        """
+        Crop a box out of the frame with extra margin, clipped to frame bounds.
+
+        The bottom gets a bigger margin than the other three sides by
+        default: haarcascade_frontalface_default.xml systematically stops
+        short of the chin/jawline (it was trained on face crops annotated
+        that way), so an equal margin on all sides still cuts the chin off
+        — padding the bottom specifically compensates without unnecessarily
+        widening the sides/top too.
+        """
         h_img, w_img = frame_bgr.shape[:2]
         x, y, w, h = box
-        mx, my = int(w * margin), int(h * margin)
+        mx = int(w * margin)
+        my_top = int(h * margin)
+        my_bottom = int(h * bottom_margin)
         x0 = max(0, x - mx)
-        y0 = max(0, y - my)
+        y0 = max(0, y - my_top)
         x1 = min(w_img, x + w + mx)
-        y1 = min(h_img, y + h + my)
+        y1 = min(h_img, y + h + my_bottom)
         return frame_bgr[y0:y1, x0:x1]
 
 
