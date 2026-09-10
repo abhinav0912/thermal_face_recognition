@@ -17,8 +17,6 @@ Usage:
     streamlit run app.py
 """
 
-import time
-
 import cv2
 import streamlit as st
 from PIL import Image
@@ -127,16 +125,26 @@ except FileNotFoundError as e:
 running = st.checkbox("▶ Run live feed", value=st.session_state.get("running", False))
 st.session_state.running = running
 
-if running:
-    st.caption("Uncheck the box above to pause the feed before enrolling someone new.")
-    placeholder = st.empty()
+
+@st.fragment(run_every=0.05)
+def live_feed():
+    """
+    Auto-reruns on its own (every ~50ms) WITHOUT touching the rest of the
+    page -- st.fragment patches just this piece of the DOM, unlike the
+    st.rerun()-in-a-loop approach this replaced, which forced the entire
+    page (sidebar, title, every widget) to tear down and redraw on every
+    single frame. That whole-page redraw is what caused the flicker.
+    """
+    if not st.session_state.get("running", False):
+        st.info("Live feed paused. Check the box above to start it, "
+                 "or enroll someone new below.")
+        return
 
     try:
         camera = get_camera(source)
     except ConnectionError as e:
         st.error(f"Could not open camera: {e}")
-        st.session_state.running = False
-        st.stop()
+        return
 
     tracker = get_tracker()
     gallery_data = gallery.load_gallery()
@@ -151,16 +159,16 @@ if running:
             label = identify(recognizer, gallery_data, crop, unknown_threshold, gallery_threshold)
             annotate(frame, box, label)
 
-        placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
+        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
     else:
-        placeholder.warning("No frame received, retrying ...")
+        st.warning("No frame received, retrying ...")
 
-    time.sleep(0.03)
-    st.rerun()
 
-else:
-    st.info("Live feed paused. Check the box above to start it, or enroll someone new below.")
+if running:
+    st.caption("Uncheck the box above to pause the feed before enrolling someone new.")
+live_feed()
 
+if not running:
     st.subheader("Enroll a new person")
     st.caption("No retraining needed -- captures a few frames on the spot and matches by "
                "similarity. Weaker than a fully trained identity, but recognizable immediately. "
