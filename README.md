@@ -4,7 +4,7 @@ Recognize **who** a person is and **what expression** they are making from a **t
 
 - **113 people**, 9 angle shots + 5 expression shots each  
 - **Input**: single thermal `.jpg` image (128 × 128)  
-- **Output**: Person ID (1–113) + Expression (Neutral / Smile / Eyes Closed / Surprised / Sunglasses)
+- **Output**: Person ID (1–113) + Expression (Angry / Happy / Neutral / Sad / Surprised)
 
 ---
 
@@ -18,9 +18,11 @@ thermal_face_recognition/
 ├── evaluate.py          # Full evaluation + confusion matrices
 ├── inference.py         # Predict on saved thermal images
 ├── camera.py            # Frame source for the live pipeline (RTSP, e.g. FLIR A50)
-├── face_detector.py     # Locates/crops a face in a raw live frame
-├── live_inference.py    # Real-time recognition from the live camera feed
+├── face_detector.py     # Locates/crops/tracks faces in a raw live frame
+├── live_inference.py    # Real-time recognition from the live camera feed (CLI/OpenCV window)
+├── app.py               # Streamlit frontend for the same live pipeline (browser UI)
 ├── collect_data.py      # Capture new labeled thermal faces (video or stills) from the live feed
+├── gallery.py           # Instant, no-retrain enrollment (data/gallery.json)
 ├── person_names.py      # person_id <-> name registry (data/person_names.json)
 ├── test_camera_connection.py  # One-off probe to find how a camera streams
 ├── requirements.txt
@@ -135,9 +137,9 @@ Example output:
 
   All expressions:
     Neutral       →  87.2%
-    Smile         →   7.1%
-    Eyes Closed   →   3.1%
-    Sunglasses    →   1.8%
+    Happy         →   7.1%
+    Sad           →   3.1%
+    Angry         →   1.8%
     Surprised     →   0.8%
 ──────────────────────────────────────────────────
 ```
@@ -189,13 +191,40 @@ capture mode:
   person's data. The raw clip is also kept in `data/videos/` for reference
   or re-processing later.
 - **`a` — angle shots**: 9 manually-posed stills, SPACE to capture each.
-- **`e` — expression shots**: 5 manually-posed stills, one per expression.
+
+(Expression-shot capture is currently disabled — not a focus for now, see below.)
 
 Either way, images are saved into `data/thermal-face-128x128/` using the
 same `{id}-TD-A-{n}.jpg` / `{id}-TD-E-{1..5}.jpg` convention the original
 dataset uses, so adding a new person is just: collect their data, then
 re-run `python train.py` — `label_map.json` is rebuilt from whatever's on
 disk each run.
+
+---
+
+## Streamlit Frontend
+
+A browser-based UI over the same live pipeline (`app.py`) — no OpenCV window,
+no keyboard-focus juggling, just buttons.
+
+```bash
+streamlit run app.py
+```
+
+- **Live feed**: check "Run live feed" to start recognizing everyone
+  currently in frame (multi-person, same classifier → gallery → Unknown
+  logic as `live_inference.py`). Uncheck to pause.
+- **Enroll a new person**: only available while the feed is paused. Type a
+  name, click "Capture & enroll" — captures a few frames of whoever is
+  largest/closest to the camera and adds them to the live gallery, no
+  retraining. Same trade-off as `live_inference.py`'s `n` key: instant, but
+  weaker than a fully trained identity.
+- **Sidebar**: camera source, device, both confidence thresholds, and a live
+  roster of everyone registered (trained + gallery-enrolled).
+
+Data collection (video/angle capture for actual training) is still done via
+`collect_data.py` — the browser UI is for the live demo/enrollment side, not
+for building the training dataset itself.
 
 ---
 
@@ -210,11 +239,11 @@ Expression index mapping:
 
 | Index | Expression |
 |---|---|
-| 1 | Neutral |
-| 2 | Smile |
-| 3 | Eyes Closed |
-| 4 | Surprised |
-| 5 | Sunglasses |
+| 1 | Angry |
+| 2 | Happy |
+| 3 | Neutral |
+| 4 | Sad |
+| 5 | Surprised |
 
 ---
 

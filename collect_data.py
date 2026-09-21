@@ -15,11 +15,12 @@ Flow:
        first time, so the live feed can display it instead of a numeric ID).
     2. Choose a capture mode:
          [v]ideo      - record a short clip while the person moves their
-                        head/expression naturally; frames are auto-sampled
-                        and face-cropped into training images. This is the
+                        head naturally; frames are auto-sampled and
+                        face-cropped into training images. This is the
                         fastest way to build up a dataset for someone.
          [a]ngle shots - 9 manually-posed stills (SPACE to capture each)
-         [e]xpression  - 5 manually-posed stills, one per expression
+         (expression-shot capture is disabled for now -- not a current
+         focus, revisit next month; search "expression disabled" below)
     3. Repeat for more people/sessions, or 'q' at the person-ID prompt to exit.
 
 Saved images land in data/thermal-face-128x128/ as {id}-TD-A-{n}.jpg or
@@ -37,7 +38,7 @@ import cv2
 
 from camera import ThermalCamera, DEFAULT_RTSP_URL
 from face_detector import ThermalFaceDetector, FaceTracker
-from model import EXPR_NAMES
+# from model import EXPR_NAMES  -- expression disabled
 from person_names import load_names, set_name, DEFAULT_NAMES_PATH
 
 IMG_SIZE = 128
@@ -99,15 +100,16 @@ def run_angle_session(camera, detector, out_dir, person_id):
         save_image(img, out_dir, person_id, "A", idx)
 
 
-def run_expression_session(camera, detector, out_dir, person_id):
-    print("\n-- Expression shots (5 expressions) --")
-    for i, expr in enumerate(EXPR_NAMES, start=1):
-        print(f"\nExpression {i}/5: make a '{expr}' face")
-        img = capture_one(camera, detector, "Collect: Expression Shots")
-        if img is None:
-            print("  Stopped early.")
-            break
-        save_image(img, out_dir, person_id, "E", i)
+# -- Expression-shot capture disabled (not a current focus) -----------------
+# def run_expression_session(camera, detector, out_dir, person_id):
+#     print("\n-- Expression shots (5 expressions) --")
+#     for i, expr in enumerate(EXPR_NAMES, start=1):
+#         print(f"\nExpression {i}/5: make a '{expr}' face")
+#         img = capture_one(camera, detector, "Collect: Expression Shots")
+#         if img is None:
+#             print("  Stopped early.")
+#             break
+#         save_image(img, out_dir, person_id, "E", i)
 
 
 def _next_angle_index(out_dir, person_id):
@@ -264,16 +266,16 @@ def main(args):
                     names = set_name(pid_int, name, args.names_path)
                     print(f"  Registered '{name}' as person {person_id}.")
 
-            mode = input("Capture [v]ideo, [a]ngle shots, or [e]xpression shots?: ").strip().lower()
+            mode = input("Capture [v]ideo or [a]ngle shots?: ").strip().lower()
             if mode.startswith("v"):
                 run_video_session(camera, detector, args.data_dir, person_id, args.video_dir,
                                    duration_sec=args.duration)
             elif mode.startswith("a"):
                 run_angle_session(camera, detector, args.data_dir, person_id)
-            elif mode.startswith("e"):
-                run_expression_session(camera, detector, args.data_dir, person_id)
+            # elif mode.startswith("e"):  -- expression capture disabled
+            #     run_expression_session(camera, detector, args.data_dir, person_id)
             else:
-                print("  Please enter 'v', 'a', or 'e'.")
+                print("  Please enter 'v' or 'a'.")
     finally:
         camera.release()
         cv2.destroyAllWindows()

@@ -2,9 +2,10 @@
 evaluate.py
 ===========
 Runs a full evaluation of the trained model on the test split (or any folder)
-and produces:
-  • Classification report (per-person and per-expression)
-  • Confusion matrices saved as PNG
+and produces a per-person classification report + confusion matrix PNG.
+
+Expression evaluation/reporting is commented out for now (not a current
+focus -- revisit next month); search for "expression disabled" in this file.
 
 Usage:
     python evaluate.py --checkpoint_dir checkpoints --data_dir data
@@ -25,7 +26,8 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, ConfusionMatrixDisplay, confusion_matrix
 
 # Re-import dataset & model (import from shared location in real project)
-from train import ThermalFaceDataset, DualHeadFaceNet, EXPR_MAP, NUM_EXPRESSIONS
+from train import ThermalFaceDataset, DualHeadFaceNet, NUM_EXPRESSIONS
+# EXPR_MAP unused -- expression disabled
 
 
 TRANSFORM = transforms.Compose([
@@ -82,7 +84,7 @@ def main(args):
 
     # ── Run inference ────────────────────────────────────────────────────────
     all_id_preds, all_id_true = [], []
-    all_ex_preds, all_ex_true = [], []
+    # all_ex_preds, all_ex_true = [], []  -- expression disabled
 
     with torch.no_grad():
         for imgs, id_lbl, expr_lbl in loader:
@@ -90,15 +92,15 @@ def main(args):
             id_lbl   = id_lbl.to(device)
             expr_lbl = expr_lbl.to(device)
 
-            id_logits, expr_logits = model(imgs)
+            id_logits, expr_logits = model(imgs)  # expr_logits unused -- expression disabled
 
             all_id_preds.extend(id_logits.argmax(1).cpu().numpy())
             all_id_true.extend(id_lbl.cpu().numpy())
 
-            mask = expr_lbl >= 0
-            if mask.sum() > 0:
-                all_ex_preds.extend(expr_logits[mask].argmax(1).cpu().numpy())
-                all_ex_true.extend(expr_lbl[mask].cpu().numpy())
+            # mask = expr_lbl >= 0
+            # if mask.sum() > 0:
+            #     all_ex_preds.extend(expr_logits[mask].argmax(1).cpu().numpy())
+            #     all_ex_true.extend(expr_lbl[mask].cpu().numpy())
 
     # ── Reports ──────────────────────────────────────────────────────────────
     print("\n── Identity Classification Report ──")
@@ -107,11 +109,12 @@ def main(args):
         all_id_true, all_id_preds, target_names=person_label_names, zero_division=0
     ))
 
-    print("\n── Expression Classification Report ──")
-    expr_names = [EXPR_MAP[str(i+1)] for i in range(NUM_EXPRESSIONS)]
-    print(classification_report(
-        all_ex_true, all_ex_preds, target_names=expr_names, zero_division=0
-    ))
+    # -- Expression report disabled ---------------------------------------
+    # print("\n── Expression Classification Report ──")
+    # expr_names = [EXPR_MAP[str(i+1)] for i in range(NUM_EXPRESSIONS)]
+    # print(classification_report(
+    #     all_ex_true, all_ex_preds, target_names=expr_names, zero_division=0
+    # ))
 
     # ── Confusion matrices ────────────────────────────────────────────────────
     cm_id = confusion_matrix(all_id_true, all_id_preds)
@@ -121,18 +124,18 @@ def main(args):
         os.path.join(args.output_dir, "cm_identity.png")
     )
 
-    cm_ex = confusion_matrix(all_ex_true, all_ex_preds)
-    plot_confusion_matrix(
-        cm_ex, expr_names,
-        "Expression Confusion Matrix",
-        os.path.join(args.output_dir, "cm_expression.png")
-    )
+    # cm_ex = confusion_matrix(all_ex_true, all_ex_preds)
+    # plot_confusion_matrix(
+    #     cm_ex, expr_names,
+    #     "Expression Confusion Matrix",
+    #     os.path.join(args.output_dir, "cm_expression.png")
+    # )
 
     # Summary
     id_acc = np.mean(np.array(all_id_preds) == np.array(all_id_true))
-    ex_acc = np.mean(np.array(all_ex_preds) == np.array(all_ex_true))
+    # ex_acc = np.mean(np.array(all_ex_preds) == np.array(all_ex_true))
     print(f"\n  Overall Identity   Accuracy : {id_acc*100:.2f}%")
-    print(f"  Overall Expression Accuracy : {ex_acc*100:.2f}%")
+    # print(f"  Overall Expression Accuracy : {ex_acc*100:.2f}%")
 
 
 if __name__ == "__main__":

@@ -15,16 +15,20 @@ pipeline without the thermal camera attached.
 import os
 import time
 
-# Must be set before any cv2.VideoCapture(...) call that opens an RTSP URL.
-# OpenCV's FFmpeg backend defaults to UDP for RTSP, which silently drops lost
-# packets and corrupts frames mid-decode (visible as "corrupted macroblock" /
-# "error while decoding MB" spam from FFmpeg). TCP retransmits instead, which
-# fixes that at the cost of slightly higher latency on a lossy link.
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
-
 import cv2
 
 DEFAULT_RTSP_URL = "rtsp://169.254.0.82:554/avc"
+
+# Which RTSP transport OpenCV's FFmpeg backend uses. UDP just drops lost
+# packets (corrupted/glitchy frames, "corrupted macroblock" spam, but the
+# stream keeps moving). TCP retransmits lost packets instead -- fine on a
+# healthy link, but if the actual problem is a flaky physical connection
+# (not just "UDP being UDP"), TCP means every drop now stalls the stream
+# waiting on a retry instead of just glitching one frame, which can look
+# like the feed hanging entirely rather than occasional bad frames.
+# Override with the THERMAL_CAMERA_RTSP_TRANSPORT env var ("tcp" or "udp")
+# to A/B test which one actually behaves better on your link.
+RTSP_TRANSPORT = os.environ.get("THERMAL_CAMERA_RTSP_TRANSPORT", "tcp")
 
 
 class ThermalCamera:
@@ -37,7 +41,17 @@ class ThermalCamera:
     def _open(self):
         if self.cap is not None:
             self.cap.release()
-        self.cap = cv2.VideoCapture(self.source)
+        if isinstance(self.source, str):
+            # Must be set before cv2.VideoCapture(...) opens the URL, and the
+            # FFmpeg backend must be explicit -- without an apiPreference,
+            # OpenCV auto-picks a backend, and on some opencv-python
+            # builds/platforms that pick isn't guaranteed to be FFmpeg, which
+            # would silently no-op this option entirely.
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{RTSP_TRANSPORT}"
+            self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+        else:
+            # A webcam index needs the platform's normal camera backend, not FFmpeg.
+            self.cap = cv2.VideoCapture(self.source)
         if not self.cap.isOpened():
             raise ConnectionError(f"Could not open camera source: {self.source}")
 

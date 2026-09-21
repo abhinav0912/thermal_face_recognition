@@ -12,11 +12,11 @@ IMG_SIZE = 128
 NUM_EXPRESSIONS = 5
 
 EXPR_MAP = {
-    "1": "Neutral",
-    "2": "Smile",
-    "3": "Eyes Closed",
-    "4": "Surprised",
-    "5": "Sunglasses",
+    "1": "Angry",
+    "2": "Happy",
+    "3": "Neutral",
+    "4": "Sad",
+    "5": "Surprised",
 }
 EXPR_NAMES = [EXPR_MAP[str(i + 1)] for i in range(NUM_EXPRESSIONS)]
 
@@ -54,8 +54,20 @@ class DualHeadFaceNet(nn.Module):
         self.identity_head = nn.Linear(512, num_persons)
         self.expression_head = nn.Linear(512, num_expressions)
 
-    def forward(self, x):
+    def get_embedding(self, x):
+        """
+        The 512-dim shared feature vector, before either classification head.
+        Used as a face "embedding" for similarity-based matching (see
+        gallery.py) when enrolling someone without retraining the classifier
+        — this network was trained for classification, not metric learning,
+        so these embeddings won't separate identities as cleanly as a
+        purpose-built embedding model, but they're a reasonable fallback for
+        people the identity_head has never seen.
+        """
         x = self.backbone(x)
         x = self.pool(x)
-        feat = self.shared_fc(x)
+        return self.shared_fc(x)
+
+    def forward(self, x):
+        feat = self.get_embedding(x)
         return self.identity_head(feat), self.expression_head(feat)
