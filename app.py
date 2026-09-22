@@ -39,76 +39,36 @@ from person_names import load_names
 
 st.set_page_config(page_title="Thermal Face Recognition", layout="wide")
 
+# NOTE: this whole block must not contain any blank lines. st.markdown()
+# runs content through a Markdown parser before letting raw HTML through,
+# and a blank line inside a <style> tag makes it treat what follows as a
+# new paragraph instead of continuing the style block -- which breaks the
+# CSS and dumps the remainder onto the page as literal visible text.
 st.markdown("""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{
-  --ew-bg:#16130f; --ew-surface:#211c17; --ew-border:#3d342a;
-  --ew-text:#f3ece2; --ew-muted:#9c9184; --ew-faint:#6b6357;
-  --ew-accent:#ff7a2f; --ew-accent-soft:rgba(255,122,47,.14);
-  --ew-good:#5fd98a; --ew-good-soft:rgba(95,217,138,.14);
-  --ew-info:#4fc3e8; --ew-info-soft:rgba(79,195,232,.14);
-}
-body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
-  font-family:"IBM Plex Sans",sans-serif;
-}
+:root{ --ew-bg:#16130f; --ew-surface:#211c17; --ew-border:#3d342a; --ew-text:#f3ece2; --ew-muted:#9c9184; --ew-faint:#6b6357; --ew-accent:#ff7a2f; --ew-accent-soft:rgba(255,122,47,.14); --ew-good:#5fd98a; --ew-good-soft:rgba(95,217,138,.14); --ew-info:#4fc3e8; --ew-info-soft:rgba(79,195,232,.14); }
+body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] { font-family:"IBM Plex Sans",sans-serif; }
 [data-testid="stSidebar"]{ border-right:1px solid var(--ew-border); }
-[data-testid="stVerticalBlockBorderWrapper"]{
-  border-color:var(--ew-border) !important;
-  border-radius:6px !important;
-}
+[data-testid="stVerticalBlockBorderWrapper"]{ border-color:var(--ew-border) !important; border-radius:6px !important; }
 [data-testid="stButton"] button{ border-radius:4px !important; font-weight:600 !important; }
-
-.ew-topbar{
-  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
-  padding:14px 20px; margin-bottom:8px;
-  background:var(--ew-surface); border:1px solid var(--ew-border); border-radius:6px;
-}
-.ew-brand-mark{
-  width:32px; height:32px; border-radius:7px; flex-shrink:0;
-  background:radial-gradient(circle at 35% 30%, #fff6ec 0%, var(--ew-accent) 42%, #c75f26 75%, #6a3312 100%);
-  box-shadow:0 0 0 1px var(--ew-border), inset 0 0 8px rgba(0,0,0,.35);
-}
-.ew-brand-name{
-  font-family:"Archivo Expanded","Archivo",sans-serif; font-weight:700;
-  font-size:1.3rem; color:var(--ew-text); letter-spacing:.01em;
-}
-.ew-brand-sub{
-  font-family:"IBM Plex Mono",monospace; font-size:.68rem; color:var(--ew-faint);
-  letter-spacing:.08em; text-transform:uppercase;
-}
-
-.ew-panel-title{
-  font-family:"IBM Plex Mono",monospace; font-size:.72rem; letter-spacing:.12em;
-  text-transform:uppercase; color:var(--ew-faint); margin-bottom:10px;
-}
-.ew-status-row{
-  display:flex; align-items:center; gap:16px; flex-wrap:wrap;
-  font-family:"IBM Plex Mono",monospace; font-size:.76rem; color:var(--ew-muted);
-  margin-bottom:10px;
-}
+.ew-topbar{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:14px 20px; margin-bottom:8px; background:var(--ew-surface); border:1px solid var(--ew-border); border-radius:6px; }
+.ew-brand-mark{ width:32px; height:32px; border-radius:7px; flex-shrink:0; background:radial-gradient(circle at 35% 30%, #fff6ec 0%, var(--ew-accent) 42%, #c75f26 75%, #6a3312 100%); box-shadow:0 0 0 1px var(--ew-border), inset 0 0 8px rgba(0,0,0,.35); }
+.ew-brand-name{ font-family:"Archivo Expanded","Archivo",sans-serif; font-weight:700; font-size:1.3rem; color:var(--ew-text); letter-spacing:.01em; }
+.ew-brand-sub{ font-family:"IBM Plex Mono",monospace; font-size:.68rem; color:var(--ew-faint); letter-spacing:.08em; text-transform:uppercase; }
+.ew-panel-title{ font-family:"IBM Plex Mono",monospace; font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ew-faint); margin-bottom:10px; }
+.ew-status-row{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; font-family:"IBM Plex Mono",monospace; font-size:.76rem; color:var(--ew-muted); margin-bottom:10px; }
 .ew-status-row b{ color:var(--ew-text); font-weight:500; }
 .ew-dot{ width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:5px; }
 .ew-dot.live{ background:var(--ew-good); box-shadow:0 0 0 3px var(--ew-good-soft); }
 .ew-dot.idle{ background:var(--ew-faint); }
-
-.ew-roster-group-label{
-  font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.1em;
-  text-transform:uppercase; color:var(--ew-faint); margin:12px 0 6px 0;
-}
+.ew-roster-group-label{ font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ew-faint); margin:12px 0 6px 0; }
 .ew-roster-row{ display:flex; align-items:center; gap:9px; padding:4px 0; }
-.ew-avatar{
-  width:22px; height:22px; border-radius:50%; flex-shrink:0;
-  display:flex; align-items:center; justify-content:center;
-  font-family:"IBM Plex Mono",monospace; font-size:.62rem; font-weight:600; color:#16130f;
-}
+.ew-avatar{ width:22px; height:22px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-family:"IBM Plex Mono",monospace; font-size:.62rem; font-weight:600; color:#16130f; }
 .ew-roster-name{ flex:1; font-size:.85rem; color:var(--ew-text); }
 .ew-roster-id{ font-family:"IBM Plex Mono",monospace; font-size:.68rem; color:var(--ew-faint); }
-.ew-chip{
-  font-family:"IBM Plex Mono",monospace; font-size:.6rem; letter-spacing:.04em;
-  padding:2px 6px; border-radius:3px; text-transform:uppercase;
-}
+.ew-chip{ font-family:"IBM Plex Mono",monospace; font-size:.6rem; letter-spacing:.04em; padding:2px 6px; border-radius:3px; text-transform:uppercase; }
 .ew-chip.trained{ background:var(--ew-good-soft); color:var(--ew-good); }
 .ew-chip.live{ background:var(--ew-info-soft); color:var(--ew-info); }
 </style>
