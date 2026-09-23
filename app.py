@@ -18,6 +18,17 @@ its internal (version-unstable) generated class names, so they degrade
 gracefully -- worst case a border doesn't render on some Streamlit version,
 nothing breaks.
 
+The live feed is delivered over real WebRTC (streamlit-webrtc) instead of
+Streamlit's usual "re-encode a frame and push it over the same channel as
+widget updates" approach -- that channel adds a full encode/serialize/
+decode round trip on every single frame, which was the main source of lag
+compared to live_inference.py's native OpenCV window. Our camera is a
+server-side RTSP source, not the browser's own webcam, so this uses a
+custom VideoStreamTrack (RecognitionVideoTrack below) whose recv() pulls
+frames from ThermalCamera, runs the same detect/track/recognize/annotate
+pipeline, and hands the result to aiortc directly -- RECVONLY mode, since
+nothing needs to go from the browser back to the server.
+
 Expression detection is commented out here too, matching the rest of the
 pipeline (not a current focus -- revisit next month).
 
@@ -25,11 +36,15 @@ Usage:
     streamlit run app.py
 """
 
-import time
+import asyncio
 
+import av
 import cv2
+import numpy as np
 import streamlit as st
+from aiortc import VideoStreamTrack
 from PIL import Image
+from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 import gallery
 from camera import ThermalCamera, DEFAULT_RTSP_URL
@@ -135,6 +150,70 @@ def annotate(frame, box, label):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
 
+# ─────────────────────────────── WebRTC video track ───────────────────────────
+
+class RecognitionVideoTrack(VideoStreamTrack):
+    """
+    A server-side WebRTC video source: recv() pulls a frame from our own
+    ThermalCamera (not the browser's webcam -- there is no browser camera
+    involved here), runs it through the same detect/track/recognize/
+    annotate pipeline the rest of the app uses, and hands aiortc the
+    result. Thresholds are plain mutable attributes updated each Streamlit
+    rerun (see below) so slider changes take effect without recreating the
+    track and disrupting the underlying WebRTC connection.
+
+    camera.read() runs in a thread-pool executor rather than being awaited
+    directly -- ThermalCamera.read() can block for a couple of seconds on
+    its own internal reconnect-and-retry logic, and doing that on aiortc's
+    event loop thread directly would stall other WebRTC housekeeping
+    (keepalives, stats) for that whole time.
+    """
+
+    def __init__(self, camera, detector, tracker, recognizer):
+        super().__init__()
+        self.camera = camera
+        self.detector = detector
+        self.tracker = tracker
+        self.recognizer = recognizer
+        self.unknown_threshold = 0.5
+        self.gallery_threshold = 0.6
+        self._last_frame = None
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+
+        loop = asyncio.get_event_loop()
+        ok, frame = await loop.run_in_executor(None, self.camera.read)
+
+        if ok and frame is not None:
+            gallery_data = gallery.load_gallery()
+            tracks = self.tracker.update(self.detector.detect(frame))
+            for box in tracks.values():
+                crop = self.detector.crop(frame, box)
+                if crop.size == 0:
+                    continue
+                label = identify(self.recognizer, gallery_data, crop,
+                                  self.unknown_threshold, self.gallery_threshold)
+                annotate(frame, box, label)
+            self._last_frame = frame
+        elif self._last_frame is not None:
+            frame = self._last_frame
+        else:
+            frame = np.zeros((240, 320, 3), dtype=np.uint8)
+
+        video_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
+        video_frame.pts = pts
+        video_frame.time_base = time_base
+        return video_frame
+
+
+def get_video_track(camera, detector, tracker, recognizer):
+    """Cached in session_state so the same track (and WebRTC connection) survives reruns."""
+    if "video_track" not in st.session_state:
+        st.session_state.video_track = RecognitionVideoTrack(camera, detector, tracker, recognizer)
+    return st.session_state.video_track
+
+
 # ─────────────────────────────── Sidebar (config + roster) ───────────────────
 
 with st.sidebar:
@@ -196,83 +275,32 @@ except FileNotFoundError as e:
     st.error(f"Could not load model: {e}")
     st.stop()
 
-running = st.checkbox("▶ Run live feed", value=st.session_state.get("running", False))
-st.session_state.running = running
-
-
-@st.fragment(run_every=0.05)
-def live_feed():
-    """
-    Auto-reruns on its own (every ~50ms) WITHOUT touching the rest of the
-    page -- st.fragment patches just this piece of the DOM, unlike an
-    st.rerun()-in-a-loop approach, which forces the entire page (sidebar,
-    title, every widget) to tear down and redraw on every single frame.
-    """
-    if not st.session_state.get("running", False):
-        st.info("Live feed paused. Check the box above to start it, "
-                 "or enroll someone new below.")
-        return
+with st.container(border=True):
+    st.markdown('<div class="ew-panel-title">Live feed</div>', unsafe_allow_html=True)
 
     try:
         camera = get_camera(source)
+        tracker = get_tracker()
+        track = get_video_track(camera, detector, tracker, recognizer)
+        track.unknown_threshold = unknown_threshold
+        track.gallery_threshold = gallery_threshold
+
+        webrtc_ctx = webrtc_streamer(
+            key="thermal-live",
+            mode=WebRtcMode.RECVONLY,
+            source_video_track=track,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+        running = bool(webrtc_ctx.state.playing)
     except ConnectionError as e:
         st.error(f"Could not open camera: {e}")
-        return
+        running = False
 
-    tracker = get_tracker()
-    gallery_data = gallery.load_gallery()
+st.session_state.running = running
 
-    now = time.time()
-    last_tick = st.session_state.get("ew_last_tick")
-    fps = (1.0 / (now - last_tick)) if last_tick else 0.0
-    st.session_state.ew_last_tick = now
-
-    ok, frame = camera.read()
-    status = st.empty()
-    if ok and frame is not None:
-        tracks = tracker.update(detector.detect(frame))
-        for box in tracks.values():
-            crop = detector.crop(frame, box)
-            if crop.size == 0:
-                continue
-            label = identify(recognizer, gallery_data, crop, unknown_threshold, gallery_threshold)
-            annotate(frame, box, label)
-
-        status.markdown(
-            f'<div class="ew-status-row">'
-            f'<span><span class="ew-dot live"></span>LIVE</span>'
-            f'<span>{len(tracks)} <b>tracked</b></span>'
-            f'<span>{fps:.1f} <b>fps</b></span>'
-            f'</div>', unsafe_allow_html=True)
-
-        # Detection/recognition above ran on the full-resolution frame (crop
-        # quality matters for accuracy); downscale + JPEG-encode only for
-        # the browser display, since that's what actually gets sent over
-        # the WebSocket each tick. st.image()'s default handling of a raw
-        # numpy array picks its own (heavier, PNG-ish) encoding -- doing
-        # this explicitly is meaningfully faster and produces a much
-        # smaller payload per frame.
-        display_frame = frame
-        if display_frame.shape[1] > 720:
-            scale = 720 / display_frame.shape[1]
-            display_frame = cv2.resize(display_frame, None, fx=scale, fy=scale)
-        ok_enc, jpeg = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        if ok_enc:
-            st.image(jpeg.tobytes())
-        else:
-            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
-    else:
-        status.markdown(
-            '<div class="ew-status-row"><span><span class="ew-dot idle"></span>RECONNECTING</span></div>',
-            unsafe_allow_html=True)
-        st.warning("No frame received, retrying ...")
-
-
-with st.container(border=True):
-    st.markdown('<div class="ew-panel-title">Live feed</div>', unsafe_allow_html=True)
-    if running:
-        st.caption("Uncheck the box above to pause the feed before enrolling someone new.")
-    live_feed()
+if running:
+    st.caption("Click STOP above to pause the feed before enrolling someone new.")
 
 if not running:
     with st.container(border=True):
