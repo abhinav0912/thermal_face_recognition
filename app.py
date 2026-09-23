@@ -244,7 +244,23 @@ def live_feed():
             f'<span>{len(tracks)} <b>tracked</b></span>'
             f'<span>{fps:.1f} <b>fps</b></span>'
             f'</div>', unsafe_allow_html=True)
-        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
+
+        # Detection/recognition above ran on the full-resolution frame (crop
+        # quality matters for accuracy); downscale + JPEG-encode only for
+        # the browser display, since that's what actually gets sent over
+        # the WebSocket each tick. st.image()'s default handling of a raw
+        # numpy array picks its own (heavier, PNG-ish) encoding -- doing
+        # this explicitly is meaningfully faster and produces a much
+        # smaller payload per frame.
+        display_frame = frame
+        if display_frame.shape[1] > 720:
+            scale = 720 / display_frame.shape[1]
+            display_frame = cv2.resize(display_frame, None, fx=scale, fy=scale)
+        ok_enc, jpeg = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if ok_enc:
+            st.image(jpeg.tobytes())
+        else:
+            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
     else:
         status.markdown(
             '<div class="ew-status-row"><span><span class="ew-dot idle"></span>RECONNECTING</span></div>',
