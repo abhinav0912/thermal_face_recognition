@@ -48,6 +48,7 @@ from face_detector import ThermalFaceDetector, MultiFaceTracker
 from inference import FaceRecognizer
 
 WINDOW_NAME = "Thermal Face Recognition"
+DISPLAY_SCALE = 1.6  # upscale factor for the preview window only -- detection/inference still run at native camera resolution
 
 
 def annotate(frame, box, person_label):
@@ -140,21 +141,27 @@ def run(args):
             # confidently-labeled box on something that isn't a face at
             # all. Each currently tracked face is identified independently.
             tracks = tracker.update(detector.detect(frame))
+
+            # Crop every tracked face first, then classify all of them in one
+            # batched forward pass -- with several people in frame this is one
+            # GPU call instead of one per face (and predict_batch returns each
+            # face's embedding from that same pass, so a low-confidence face
+            # doesn't need a second backbone pass for the gallery fallback
+            # either). See inference.py's FaceRecognizer.predict_batch.
+            boxes, crops = [], []
             for box in tracks.values():
                 crop = detector.crop(frame, box)
                 if crop.size == 0:
                     continue
+                boxes.append(box)
+                crops.append(Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
 
-                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(crop_rgb)
-                result = recognizer.predict_image(pil_img, top_k=1)
-
+            for box, (result, embedding) in zip(boxes, recognizer.predict_batch(crops, top_k=1)):
                 if result["person_conf"] >= args.unknown_threshold:
                     person_label = f"{result['person_name']} ({result['person_conf']*100:.0f}%)"
                 else:
                     # The trained classifier isn't confident -- fall back
                     # to the live-enrolled gallery before giving up.
-                    embedding = recognizer.embed_image(pil_img)
                     gallery_name, sim = gallery.match(
                         embedding, gallery_data, threshold=args.gallery_threshold)
                     if gallery_name:
@@ -173,7 +180,9 @@ def run(args):
                 fps = frame_count / (time.time() - fps_t0)
                 cv2.setWindowTitle(WINDOW_NAME, f"{WINDOW_NAME} - {fps:.1f} FPS")
 
-            cv2.imshow(WINDOW_NAME, frame)
+            display = cv2.resize(frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE,
+                                  interpolation=cv2.INTER_LINEAR)
+            cv2.imshow(WINDOW_NAME, display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break

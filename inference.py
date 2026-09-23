@@ -111,7 +111,7 @@ class FaceRecognizer:
             (expression keys removed -- expression disabled for now)
         """
         img = img.convert("RGB")
-        tensor = TRANSFORM(img).unsqueeze(0).to(self.device)
+        tensor = TRANSFORM(img).unsqueeze(0).to(self.device, non_blocking=True)
 
         id_logits, expr_logits = self.model(tensor)  # expr_logits unused -- expression disabled
 
@@ -151,8 +151,57 @@ class FaceRecognizer:
         entirely. See DualHeadFaceNet.get_embedding for caveats.
         """
         img = img.convert("RGB")
-        tensor = TRANSFORM(img).unsqueeze(0).to(self.device)
+        tensor = TRANSFORM(img).unsqueeze(0).to(self.device, non_blocking=True)
         return self.model.get_embedding(tensor)[0].cpu().numpy()
+
+    @torch.no_grad()
+    def predict_batch(self, imgs: list, top_k: int = 3):
+        """
+        Classify several face crops in a single forward pass instead of one
+        call per face -- the live multi-person path (live_inference.py,
+        app.py) used to loop predict_image()+embed_image() per tracked face,
+        which on a GPU means launching a full MobileNetV2 pass per face and
+        never actually using the GPU's ability to process a batch in
+        parallel. Also returns each image's embedding "for free" (see
+        DualHeadFaceNet.forward_with_embedding) so the gallery-match
+        fallback doesn't need a second backbone pass through embed_image().
+
+        Parameters
+        ----------
+        imgs : list[PIL.Image]
+
+        Returns
+        -------
+        list of (result_dict, embedding) in the same order as `imgs`.
+        result_dict matches predict_image()'s return format. Empty list for
+        empty input (skips the batch entirely rather than running the model
+        on a zero-sized tensor).
+        """
+        if not imgs:
+            return []
+
+        tensors = torch.stack([TRANSFORM(img.convert("RGB")) for img in imgs])
+        tensors = tensors.to(self.device, non_blocking=True)
+
+        id_logits, expr_logits, embeddings = self.model.forward_with_embedding(tensors)
+        id_probs = F.softmax(id_logits, dim=1).cpu().numpy()
+        embeddings = embeddings.cpu().numpy()
+
+        results = []
+        for i in range(len(imgs)):
+            probs = id_probs[i]
+            top_k_ids = np.argsort(probs)[::-1][:top_k]
+            person_id = self.label_to_pid[int(top_k_ids[0])]
+            person_conf = float(probs[top_k_ids[0]])
+            top_persons = [(self.label_to_pid[int(j)], float(probs[j])) for j in top_k_ids]
+            result = {
+                "person_id":   person_id,
+                "person_name": self.display_name(person_id),
+                "person_conf": person_conf,
+                "top_persons": top_persons,
+            }
+            results.append((result, embeddings[i]))
+        return results
 
 
 def print_result(image_path: str, result: dict):

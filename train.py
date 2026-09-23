@@ -138,24 +138,31 @@ def accuracy(logits, labels, mask=None):
     return (preds == labels).float().mean().item()
 
 
-def train_one_epoch(model, loader, optimizer, scheduler, device):
+def train_one_epoch(model, loader, optimizer, scheduler, device, scaler):
     model.train()
     total_loss = id_acc_sum = expr_acc_sum = n = 0
+    use_amp = device.type == "cuda"
 
     for imgs, id_lbl, expr_lbl in loader:
-        imgs      = imgs.to(device)
-        id_lbl    = id_lbl.to(device)
-        expr_lbl  = expr_lbl.to(device)
+        imgs      = imgs.to(device, non_blocking=True)
+        id_lbl    = id_lbl.to(device, non_blocking=True)
+        expr_lbl  = expr_lbl.to(device, non_blocking=True)
 
-        id_logits, expr_logits = model(imgs)
-        loss, _, _ = compute_loss(
-            id_logits, expr_logits, id_lbl, expr_lbl,
-            nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
-        )
+        optimizer.zero_grad(set_to_none=True)
+        # Mixed precision on GPU: this backbone's convs/linears run in fp16/bf16 at
+        # roughly 2x the throughput on tensor-core hardware, with GradScaler guarding
+        # against fp16 underflow in the backward pass. No-ops cleanly on CPU (scaler
+        # is constructed with enabled=False there) so this isn't a GPU-only code path.
+        with torch.autocast(device_type=device.type, enabled=use_amp):
+            id_logits, expr_logits = model(imgs)
+            loss, _, _ = compute_loss(
+                id_logits, expr_logits, id_lbl, expr_lbl,
+                nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
+            )
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         # mask = expr_lbl >= 0
         total_loss  += loss.item()
@@ -171,16 +178,18 @@ def train_one_epoch(model, loader, optimizer, scheduler, device):
 def evaluate(model, loader, device):
     model.eval()
     total_loss = id_acc_sum = expr_acc_sum = n = 0
+    use_amp = device.type == "cuda"
 
     all_id_preds, all_id_true = [], []
     all_ex_preds, all_ex_true = [], []
 
     for imgs, id_lbl, expr_lbl in loader:
-        imgs     = imgs.to(device)
-        id_lbl   = id_lbl.to(device)
-        expr_lbl = expr_lbl.to(device)
+        imgs     = imgs.to(device, non_blocking=True)
+        id_lbl   = id_lbl.to(device, non_blocking=True)
+        expr_lbl = expr_lbl.to(device, non_blocking=True)
 
-        id_logits, expr_logits = model(imgs)
+        with torch.autocast(device_type=device.type, enabled=use_amp):
+            id_logits, expr_logits = model(imgs)
         loss, _, _ = compute_loss(
             id_logits, expr_logits, id_lbl, expr_lbl,
             nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
@@ -227,9 +236,16 @@ def plot_history(history: dict, save_path: str):
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        # Autotunes cuDNN's conv algorithm selection for this model's fixed 128x128
+        # input shape -- pays for itself after the first few batches since the shape
+        # never changes here, and costs nothing to leave on.
+        torch.backends.cudnn.benchmark = True
     print(f"\n{'='*60}")
     print(f"  Thermal Face Recognition – Training")
     print(f"  Device : {device}")
+    if device.type == "cuda":
+        print(f"  GPU    : {torch.cuda.get_device_name(0)}")
     print(f"{'='*60}\n")
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -265,10 +281,12 @@ def main(args):
     # Apply val transform to val split
     val_ds.dataset.transform = val_tf   # shared dataset object — set at eval time
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size,
-                              shuffle=True,  num_workers=args.workers, pin_memory=True)
-    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size,
-                              shuffle=False, num_workers=args.workers, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                              num_workers=args.workers, pin_memory=True,
+                              persistent_workers=(args.workers > 0))
+    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False,
+                              num_workers=args.workers, pin_memory=True,
+                              persistent_workers=(args.workers > 0))
 
     # Save label map so inference.py can use it
     label_map = {"pid_to_label": full_ds.pid_to_label,
@@ -295,6 +313,7 @@ def main(args):
         lr=args.lr, weight_decay=1e-4
     )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda"))
 
     history = {k: [] for k in
                ["train_loss","val_loss","train_id_acc","val_id_acc"]}
@@ -322,7 +341,7 @@ def main(args):
 
         t0 = time.time()
         tr_loss, tr_id, tr_ex = train_one_epoch(
-            model, train_loader, optimizer, scheduler, device)
+            model, train_loader, optimizer, scheduler, device, scaler)
         vl_loss, vl_id, vl_ex, \
         id_preds, id_true, ex_preds, ex_true = evaluate(model, val_loader, device)
 
@@ -376,6 +395,12 @@ if __name__ == "__main__":
     parser.add_argument("--dropout",       type=float, default=0.4)
     parser.add_argument("--unfreeze_epoch",type=int, default=10,
                         help="Epoch at which to unfreeze the backbone")
-    parser.add_argument("--workers",       type=int, default=4)
+    parser.add_argument("--workers",       type=int, default=(0 if os.name == "nt" else 4),
+                        help="DataLoader worker processes. Defaults to 0 on Windows: "
+                             "Windows' spawn-based multiprocessing deadlocked here with "
+                             "workers>0 (confirmed directly -- GPU/CPU both went idle "
+                             "mid-run); 0 loads data on the main process instead, which "
+                             "is slower per-batch but has never hung. Override if your "
+                             "setup doesn't hit that.")
     args = parser.parse_args()
     main(args)

@@ -185,6 +185,8 @@ def train_variant(model, train_loader, val_loader, variant_name: str,
 class AblationStudy:
     def __init__(self, data_dir: str, epochs=20, mode="quick"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True  # fixed 128x128 input shape across every run here
         self.data_dir = data_dir
         self.epochs = epochs
         self.mode = mode

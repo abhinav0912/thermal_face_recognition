@@ -1,3 +1,7 @@
+# Recommended: `uv sync` (uses pyproject.toml) instead of `pip install -r` here --
+# this file alone will silently pull PyPI's CPU-only torch build. See README's
+# "GPU vs CPU" section, or pass --index-url https://download.pytorch.org/whl/cu128
+# (adjust cu-version to your driver) if you need to use plain pip.
 torch>=2.0.0
 torchvision>=0.15.0
 Pillow>=9.0.0

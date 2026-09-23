@@ -30,7 +30,7 @@ class DualHeadFaceNet(nn.Module):
         return self.identity_head(feat), self.expression_head(feat)
 
 # Load model
-device = torch.device('cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Loading model...")
 ckpt = torch.load('checkpoints/best_model.pth', map_location=device)
 
