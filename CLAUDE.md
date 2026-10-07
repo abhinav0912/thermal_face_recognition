@@ -2,6 +2,7 @@
 
 Project memory for Claude. Read this first in any new or compacted session.
 **Keep it updated:** at the end of any turn that changes code, decisions, setup or open items, edit the relevant section and add a line to the Changelog.
+**Honesty rule (user, 2026-10-07):** in this project always be truthful. If I don't know something, or haven't verified it, say "I do not know" rather than guessing or stating a guess as fact. Label unverified claims as unverified.
 **User preference:** when the user asks for "next steps", walk them through each step one at a time with exact PowerShell commands (they are on Windows 11 PowerShell, not Git Bash) and say what they should see after each.
 **Before editing code, run `git fetch origin` and read `git log origin/main`:** a second Claude session runs in the user's VS Code and commits straight to `main`. Its code was built against the real camera and is the tested line. Don't overwrite it from the sandbox, which can't reach the camera.
 
@@ -17,7 +18,7 @@ Live person identification from a FLIR A50 thermal camera, for a live demo:
 ## Hardware / environment
 - Camera: FLIR A50, link-local IP `169.254.0.82` (direct Ethernet to the PC). Working stream: `rtsp://169.254.0.82:554/avc`. Web UI at `http://169.254.0.82`.
 - GPU: NVIDIA RTX PRO 6000 Blackwell Max-Q (sm_120), driver CUDA 13.2. Needs a PyTorch build from the CUDA 12.8 index. `pyproject.toml` pins torch/torchvision to `https://download.pytorch.org/whl/cu128` for `uv`.
-- User's machine: Windows 11, VS Code, PowerShell. Project folder: `C:\thermal_face_recognition-main\thermal_face_recognition-main` (double-nested, from a GitHub zip download). The environment is managed with **`uv`** (`uv sync`); a uv venv has no `pip`, which is why plain `pip` was "not recognized". Use `uv sync` / `uv pip install ...`. `requirements.txt` is kept but installs a CPU-only torch via plain pip.
+- User's machine: Windows 11, VS Code, PowerShell. Project folder: `C:\thermal_face_recognition-main\thermal_face_recognition-main` (double-nested, from a GitHub zip download). The user installs with **plain `pip`** (told to me 2026-10-07). Earlier I wrongly guessed the venv was uv-based; `main` ships `pyproject.toml`/`uv.lock` (from the user's other Claude session) but the user does not use uv. Their venv reportedly has torch 2.11.0+cu128 already. Plain `pip` was "not recognized" in their terminal at one point, so use `python -m pip`. `requirements.txt` would pull CPU-only torch on a fresh venv; for a fresh install use `--index-url https://download.pytorch.org/whl/cu128` for torch/torchvision.
 - The network sits behind a TLS-inspecting corporate proxy (Zscaler); `pyproject.toml` sets `[tool.uv] system-certs = true` for that.
 - Windows gotchas: Git is installed but needed `C:\Program Files\Git\cmd` added to PATH; `.streamlit` is a dot-folder.
 - The Claude sandbox cannot reach the camera and has no browser. Camera, UI and speed can only be verified by the user running things locally. Ask for screenshots/terminal output.
@@ -77,3 +78,4 @@ Dark warm charcoal `#16130f`, surface `#211c17`, thermal amber accent `#ff7a2f`,
 - 2026-10-06: Created this file.
 - 2026-10-07: Learned `main` has substantial tested work (threaded UDP camera, two-pass detection, batched GPU inference, AMP training, uv packaging, Emberwatch app, 5-person retrain). Merged it into the PR branch with main as the base and rewrote this file to match. WebRTC app parked at `79ff481`.
 - 2026-10-07: Recorded the user's preference to be walked through next steps step by step.
+- 2026-10-07: Corrected the uv assumption (user uses pip). Added the honesty rule.
