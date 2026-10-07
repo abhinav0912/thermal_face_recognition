@@ -33,11 +33,11 @@ from sklearn.metrics import confusion_matrix
 import seaborn as sns
 
 EXPR_MAP = {
-    "1": "Angry",
-    "2": "Happy",
-    "3": "Neutral",
-    "4": "Sad",
-    "5": "Surprised",
+    "1": "Neutral",
+    "2": "Smile",
+    "3": "Eyes Closed",
+    "4": "Surprised",
+    "5": "Sunglasses",
 }
 
 def parse_filename(fname: str):

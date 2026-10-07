@@ -1,0 +1,21 @@
+{
+  "pid_to_label": {
+    "120": 0,
+    "121": 1,
+    "122": 2,
+    "123": 3
+  },
+  "person_ids": [
+    120,
+    121,
+    122,
+    123
+  ],
+  "expr_map": {
+    "1": "Neutral",
+    "2": "Smile",
+    "3": "Eyes Closed",
+    "4": "Surprised",
+    "5": "Sunglasses"
+  }
+}

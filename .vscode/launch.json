@@ -2,15 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "1. Prepare Data",
+            "name": "1. Collect Data",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/prepare_data.py",
-            "args": [
-                "--rgb_zip",     "RGB-faces-128x128.zip",
-                "--thermal_zip", "thermal-face-128x128.zip",
-                "--out_dir",     "data"
-            ],
+            "program": "${workspaceFolder}/collect_data.py",
             "console": "integratedTerminal"
         },
         {
@@ -25,8 +20,7 @@
                 "--batch_size",     "32",
                 "--lr",             "1e-3",
                 "--unfreeze_epoch", "10",
-                "--val_split",      "0.15",
-                "--workers",        "4"
+                "--val_split",      "0.15"
             ],
             "console": "integratedTerminal"
         },
@@ -48,7 +42,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/inference.py",
             "args": [
-                "--image",          "data/thermal-face-128x128/5-TD-E-3.jpg",
+                "--image",          "data/thermal-face-128x128/120-TD-A-111.jpg",
                 "--checkpoint_dir", "checkpoints"
             ],
             "console": "integratedTerminal"

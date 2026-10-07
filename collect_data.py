@@ -42,6 +42,13 @@ from face_detector import ThermalFaceDetector, FaceTracker
 from person_names import load_names, set_name, DEFAULT_NAMES_PATH
 
 IMG_SIZE = 128
+DISPLAY_SCALE = 1.6  # upscale factor for preview windows only -- captured/saved crops are unaffected
+
+
+def _show(window_name, frame):
+    display = cv2.resize(frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE,
+                          interpolation=cv2.INTER_LINEAR)
+    cv2.imshow(window_name, display)
 
 
 def capture_one(camera, detector, window_name):
@@ -68,7 +75,7 @@ def capture_one(camera, detector, window_name):
 
         cv2.putText(display, "SPACE = capture   q = skip",
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.imshow(window_name, display)
+        _show(window_name, display)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord(" ") and crop is not None and crop.size > 0:
@@ -155,7 +162,7 @@ def wait_for_start(camera, detector, tracker, window_name, timeout_sec: float = 
 
         cv2.putText(display, "Position the face in frame. SPACE = start recording, q = cancel",
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-        cv2.imshow(window_name, display)
+        _show(window_name, display)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord(" "):
@@ -216,7 +223,7 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         cv2.putText(display, f"Frames saved: {saved}",
                     (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.imshow(window_name, display)
+        _show(window_name, display)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 

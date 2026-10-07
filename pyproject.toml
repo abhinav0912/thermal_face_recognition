@@ -1,0 +1,44 @@
+[project]
+name = "thermal-face-recognition"
+version = "0.1.0"
+description = "Thermal face identity recognition over a live-collected roster (FLIR A50 + MobileNetV2)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "Pillow>=9.0.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.2.0",
+    "matplotlib>=3.7.0",
+    "opencv-python>=4.8.0,<5.0.0",
+    "streamlit>=1.37.0",
+]
+
+# This network sits behind a TLS-inspecting corporate proxy (Zscaler) whose root CA
+# uv doesn't trust by default, which makes a plain `uv sync` fail outright trying to
+# reach download.pytorch.org -- not just fall back to a worse result, an outright
+# connection error. native-tls makes uv use the OS certificate store (which already
+# trusts the proxy's CA, same as every other app on this machine) instead of its own
+# bundled cert list. Machine/network without this proxy? This line is harmless either
+# way -- the OS store still validates normal public certs correctly.
+[tool.uv]
+system-certs = true
+
+# Pins torch/torchvision to PyTorch's CUDA 12.8 wheel index instead of PyPI's default
+# CPU-only build -- `uv sync` / `uv pip install .` alone is enough to get a GPU-enabled
+# install, no manual --index-url needed. Confirmed working on an RTX PRO 6000 Blackwell
+# (driver CUDA 13.2 -- newer drivers stay compatible with older CUDA toolkit builds).
+# `explicit = true` means this index is ONLY used for packages listed in
+# [tool.uv.sources] below, never as a general fallback for anything else -- avoids
+# accidentally resolving some other dependency from PyTorch's index instead of PyPI.
+#
+# CPU-only machine (no NVIDIA GPU)? Delete this index block and the [tool.uv.sources]
+# block below -- torch will resolve from PyPI's default CPU build instead.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }

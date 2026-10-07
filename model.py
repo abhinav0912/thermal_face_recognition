@@ -71,3 +71,13 @@ class DualHeadFaceNet(nn.Module):
     def forward(self, x):
         feat = self.get_embedding(x)
         return self.identity_head(feat), self.expression_head(feat)
+
+    def forward_with_embedding(self, x):
+        """Same computation as forward(), but also returns the shared 512-dim feature.
+        Classification and the gallery-matching embedding (see get_embedding) come from
+        the exact same backbone pass this way -- callers that need both (the live
+        classifier-then-gallery-fallback path in inference.py) don't have to run the
+        backbone a second time just to get the embedding forward() already computed
+        and discarded."""
+        feat = self.get_embedding(x)
+        return self.identity_head(feat), self.expression_head(feat), feat

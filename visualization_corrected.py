@@ -30,7 +30,7 @@ class DualHeadFaceNet(nn.Module):
         return self.identity_head(feat), self.expression_head(feat)
 
 # Load model
-device = torch.device('cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Loading model...")
 ckpt = torch.load('checkpoints/best_model.pth', map_location=device)
 
@@ -43,8 +43,7 @@ model = DualHeadFaceNet(num_persons, 5).to(device)
 model.load_state_dict(ckpt['model_state'])
 model.eval()
 
-# CORRECT EXPRESSION NAMES - MATCHING THE DATASET
-expr_names = ['Neutral', 'Smile', 'Shocked', 'Sunglasses', 'Eyes Closed']
+expr_names = ['Neutral', 'Smile', 'Eyes Closed', 'Surprised', 'Sunglasses']
 
 # Get image path
 image_path = sys.argv[1] if len(sys.argv) > 1 else 'data/thermal-face-128x128/110-TD-E-2.jpg'

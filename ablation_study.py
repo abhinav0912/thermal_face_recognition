@@ -30,7 +30,7 @@ from PIL import Image
 import numpy as np
 import re
 
-EXPR_MAP = {"1": "Angry", "2": "Happy", "3": "Neutral", "4": "Sad", "5": "Surprised"}
+EXPR_MAP = {"1": "Neutral", "2": "Smile", "3": "Eyes Closed", "4": "Surprised", "5": "Sunglasses"}
 
 def parse_filename(fname: str):
     m = re.match(r"^(\d+)-TD-([AE])-(\d+)\.jpg$", fname, re.IGNORECASE)
@@ -185,6 +185,8 @@ def train_variant(model, train_loader, val_loader, variant_name: str,
 class AblationStudy:
     def __init__(self, data_dir: str, epochs=20, mode="quick"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True  # fixed 128x128 input shape across every run here
         self.data_dir = data_dir
         self.epochs = epochs
         self.mode = mode
