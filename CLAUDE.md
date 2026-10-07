@@ -2,6 +2,7 @@
 
 Project memory for Claude. Read this first in any new or compacted session.
 **Keep it updated:** at the end of any turn that changes code, decisions, setup or open items, edit the relevant section and add a line to the Changelog.
+**User preference:** when the user asks for "next steps", walk them through each step one at a time with exact PowerShell commands (they are on Windows 11 PowerShell, not Git Bash) and say what they should see after each.
 **Before editing code, run `git fetch origin` and read `git log origin/main`:** a second Claude session runs in the user's VS Code and commits straight to `main`. Its code was built against the real camera and is the tested line. Don't overwrite it from the sandbox, which can't reach the camera.
 
 ## Goal
@@ -75,3 +76,4 @@ Dark warm charcoal `#16130f`, surface `#211c17`, thermal amber accent `#ff7a2f`,
 ## Changelog
 - 2026-10-06: Created this file.
 - 2026-10-07: Learned `main` has substantial tested work (threaded UDP camera, two-pass detection, batched GPU inference, AMP training, uv packaging, Emberwatch app, 5-person retrain). Merged it into the PR branch with main as the base and rewrote this file to match. WebRTC app parked at `79ff481`.
+- 2026-10-07: Recorded the user's preference to be walked through next steps step by step.
