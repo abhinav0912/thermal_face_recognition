@@ -52,6 +52,7 @@ from camera import ThermalCamera, DEFAULT_RTSP_URL
 from face_detector import ThermalFaceDetector, MultiFaceTracker
 from inference import FaceRecognizer
 from person_names import load_names
+from stream_server import RecognitionStreamer, embed_html, STREAM_HOST
 
 st.set_page_config(page_title="Thermal Face Recognition", layout="wide")
 
@@ -93,6 +94,9 @@ body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] { font-famil
 </style>
 """, unsafe_allow_html=True)
 
+STREAM_MODE = "Fast stream (recommended)"
+CLASSIC_MODE = "Classic (slower)"
+
 _AVATAR_COLORS = ["#e8b25c", "#8fd0c4", "#e08a7d", "#c7a8e8", "#7ec8e3", "#e8c95c", "#9bd08f"]
 
 
@@ -117,6 +121,19 @@ def _gpu_label(device: torch.device) -> str:
     if device.type == "cuda":
         return f"{torch.cuda.get_device_name(0)} · cuda"
     return "CPU"
+
+
+def _topbar_html(status_html: str) -> str:
+    return (
+        f'<div class="ew-topbar">'
+        f'<div class="ew-topbar-left">'
+        f'<div class="ew-brand-mark"></div>'
+        f'<div>'
+        f'<div class="ew-brand-name">Thermal Face Recognition</div>'
+        f'<div class="ew-brand-sub">Live identification console</div>'
+        f'</div></div>'
+        f'<div class="ew-status-row">{status_html}</div>'
+        f'</div>')
 
 
 # ─────────────────────────────── Cached, expensive-to-load resources ─────────
@@ -151,6 +168,14 @@ def get_camera(source: str):
 @st.cache_resource
 def get_tracker():
     return MultiFaceTracker()
+
+
+@st.cache_resource
+def get_streamer(_detector, _tracker):
+    # Process-wide for the same reason as the camera/tracker above: one pipeline, one
+    # HTTP stream, shared by every open tab (so tabs share the Run/Pause state too).
+    return RecognitionStreamer(_detector, _tracker, identify_all, annotate,
+                               gallery.load_gallery, gallery.DEFAULT_GALLERY_PATH)
 
 
 # ─────────────────────────────── Recognition ──────────────────────────────────
@@ -189,10 +214,15 @@ def annotate(frame, box, label, known):
 def render_settings_panel():
     with st.container(border=True):
         st.markdown('<div class="ew-panel-title">Settings</div>', unsafe_allow_html=True)
-        running = st.toggle("Run live feed", value=st.session_state.get("running", False))
-        st.markdown('<div class="ew-toggle-caption">streaming @ 20fps target</div>',
-                    unsafe_allow_html=True)
-        st.session_state.running = running
+        # key= (not value=<previous state>): passing the old state as `value` changes the
+        # widget's identity every time it flips, and the first click after a flip got dropped
+        # (reproduced: turning the feed off took two clicks).
+        running = st.toggle("Run live feed", key="running")
+        caption = ("MJPEG stream: processed on its own thread, played by the browser"
+                   if st.session_state.get("video_mode", STREAM_MODE) == STREAM_MODE
+                   else "one Streamlit update per frame -- slower")
+        st.markdown(f'<div class="ew-toggle-caption">{caption}</div>', unsafe_allow_html=True)
+        video_mode = st.selectbox("Video mode", [STREAM_MODE, CLASSIC_MODE], key="video_mode")
 
         source = st.text_input("Camera source (RTSP URL or webcam index)", value=DEFAULT_RTSP_URL)
         checkpoint_dir = st.text_input("Checkpoint directory", value="checkpoints")
@@ -200,7 +230,8 @@ def render_settings_panel():
         device_arg = "" if device == "Auto" else device
         unknown_threshold = st.slider("Unknown threshold (classifier)", 0.0, 1.0, 0.5, 0.05)
         gallery_threshold = st.slider("Gallery match threshold", 0.0, 1.0, 0.6, 0.05)
-    return running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold
+    return (running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold,
+            video_mode)
 
 
 def render_roster_panel(names: dict, gallery_data: dict):
@@ -243,8 +274,8 @@ def render_roster_panel(names: dict, gallery_data: dict):
 left_col, right_col = st.columns([2, 1], gap="medium")
 
 with right_col:
-    running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold = \
-        render_settings_panel()
+    (running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold,
+     video_mode) = render_settings_panel()
 
     names = load_names()
     gallery_data = gallery.load_gallery()
@@ -327,16 +358,7 @@ def live_feed():
                     f'<span>{_format_source(source)}</span>'
                 )
 
-    st.markdown(
-        f'<div class="ew-topbar">'
-        f'<div class="ew-topbar-left">'
-        f'<div class="ew-brand-mark"></div>'
-        f'<div>'
-        f'<div class="ew-brand-name">Thermal Face Recognition</div>'
-        f'<div class="ew-brand-sub">Live identification console</div>'
-        f'</div></div>'
-        f'<div class="ew-status-row">{status_html}</div>'
-        f'</div>', unsafe_allow_html=True)
+    st.markdown(_topbar_html(status_html), unsafe_allow_html=True)
 
     with st.container(border=True):
         st.markdown(
@@ -352,8 +374,78 @@ def live_feed():
             st.info("Live feed paused. Toggle it on above, or enroll someone new below.")
 
 
-with left_col:
-    live_feed()
+def _stream_host(streamer) -> str:
+    """Host the browser should use to reach the stream: loopback unless the stream was
+    deliberately exposed (THERMAL_STREAM_HOST), in which case reuse the host the page
+    itself was opened with."""
+    if STREAM_HOST in ("127.0.0.1", "localhost"):
+        return "127.0.0.1"
+    try:
+        return st.context.headers.get("Host", "127.0.0.1").rsplit(":", 1)[0]
+    except Exception:
+        return "127.0.0.1"
+
+
+@st.fragment(run_every=1.0)
+def stream_status():
+    """Status bar for the fast-stream mode. The video itself never goes through
+    Streamlit, so this only has to refresh a few numbers once a second."""
+    stats = get_streamer(detector, get_tracker()).stats()
+    if st.session_state.get("running", False):
+        if stats["error"]:
+            status_html = (
+                f'<span><span class="ew-dot idle"></span>{stats["error"]}</span>'
+                f'<span>{_format_source(source)}</span>')
+        else:
+            status_html = (
+                f'<span><span class="ew-dot live"></span>LIVE</span>'
+                f'<span>{_format_source(source)}</span>'
+                f'<span>{stats["fps"]:.1f} <b>fps</b></span>'
+                f'<span>{stats["tracked"]} tracked</span>'
+                + (f'<span title="smoothed time per frame">detect {stats["ms"]["detect"]:.0f} &middot; '
+                   f'identify {stats["ms"]["identify"]:.0f} &middot; encode {stats["ms"]["encode"]:.0f} ms</span>'
+                   if stats.get("ms") else "") +
+                f'<span>{_gpu_label(recognizer.device)}</span>')
+    else:
+        status_html = (
+            f'<span><span class="ew-dot idle"></span>IDLE</span>'
+            f'<span>{_format_source(source)}</span>'
+            f'<span>{_gpu_label(recognizer.device)}</span>')
+    st.markdown(_topbar_html(status_html), unsafe_allow_html=True)
+
+
+if video_mode == STREAM_MODE:
+    streamer = get_streamer(detector, get_tracker())
+    camera = None
+    if running:
+        try:
+            camera = get_camera(source)
+        except ConnectionError as e:
+            st.error(f"Could not open camera: {e}")
+    if camera is not None:
+        streamer.configure(camera, recognizer, unknown_threshold, gallery_threshold)
+        streamer.set_active(True)
+    else:
+        streamer.set_active(False)   # also waits out an in-flight frame, so enrollment below is safe
+    st.session_state.stream_was_active = camera is not None
+
+    with left_col:
+        stream_status()
+        with st.container(border=True):
+            st.markdown('<div class="ew-panel-title-row"><span class="ew-panel-title">Live feed</span></div>',
+                        unsafe_allow_html=True)
+            if camera is not None:
+                st.markdown(embed_html(streamer.url(_stream_host(streamer))), unsafe_allow_html=True)
+            else:
+                st.info("Live feed paused. Toggle it on above, or enroll someone new below.")
+else:
+    if st.session_state.get("stream_was_active"):
+        # Switched from stream to classic: stop the stream's thread first -- it shares the
+        # (not thread-safe) detector/tracker/camera with the classic loop below.
+        get_streamer(detector, get_tracker()).set_active(False)
+        st.session_state.stream_was_active = False
+    with left_col:
+        live_feed()
 
 
 # ─────────────────────────────── Enroll ────────────────────────────────────────
@@ -369,10 +461,9 @@ with st.container(border=True):
     capture_clicked = btn_col.button(
         "Capture & enroll", type="primary",
         disabled=not enroll_name.strip() or st.session_state.get("running", False))
-    if pause_col.button("Pause feed first", type="secondary",
-                         disabled=not st.session_state.get("running", False)):
-        st.session_state.running = False
-        st.rerun()
+    pause_col.button("Pause feed first", type="secondary",
+                     disabled=not st.session_state.get("running", False),
+                     on_click=lambda: st.session_state.update(running=False))
 
     if capture_clicked:
         try:
