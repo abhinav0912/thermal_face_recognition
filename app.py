@@ -96,6 +96,8 @@ body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] { font-famil
 
 STREAM_MODE = "Fast stream (recommended)"
 CLASSIC_MODE = "Classic (slower)"
+DETECT_FULL = "Full resolution (current)"
+DETECT_HALF = "Half resolution (faster)"
 
 _AVATAR_COLORS = ["#e8b25c", "#8fd0c4", "#e08a7d", "#c7a8e8", "#7ec8e3", "#e8c95c", "#9bd08f"]
 
@@ -223,6 +225,11 @@ def render_settings_panel():
                    else "one Streamlit update per frame -- slower")
         st.markdown(f'<div class="ew-toggle-caption">{caption}</div>', unsafe_allow_html=True)
         video_mode = st.selectbox("Video mode", [STREAM_MODE, CLASSIC_MODE], key="video_mode")
+        detect_res = st.selectbox(
+            "Face detection", [DETECT_FULL, DETECT_HALF], key="detect_res",
+            help="Half resolution finds faces on a downscaled copy of the frame: much faster, "
+                 "but small/distant faces may be missed. Switch back to Full if people are "
+                 "missed or the boxes look worse.")
 
         source = st.text_input("Camera source (RTSP URL or webcam index)", value=DEFAULT_RTSP_URL)
         checkpoint_dir = st.text_input("Checkpoint directory", value="checkpoints")
@@ -231,7 +238,7 @@ def render_settings_panel():
         unknown_threshold = st.slider("Unknown threshold (classifier)", 0.0, 1.0, 0.5, 0.05)
         gallery_threshold = st.slider("Gallery match threshold", 0.0, 1.0, 0.6, 0.05)
     return (running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold,
-            video_mode)
+            video_mode, detect_res)
 
 
 def render_roster_panel(names: dict, gallery_data: dict):
@@ -275,7 +282,7 @@ left_col, right_col = st.columns([2, 1], gap="medium")
 
 with right_col:
     (running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold,
-     video_mode) = render_settings_panel()
+     video_mode, detect_res) = render_settings_panel()
 
     names = load_names()
     gallery_data = gallery.load_gallery()
@@ -287,6 +294,9 @@ try:
 except FileNotFoundError as e:
     st.error(f"Could not load model: {e}")
     st.stop()
+
+# Applies to every consumer of the (shared) detector: stream, classic loop and enrollment.
+detector.detect_scale = 0.5 if detect_res == DETECT_HALF else 1.0
 
 
 @st.fragment(run_every=0.05)
@@ -402,6 +412,7 @@ def stream_status():
                 f'<span>{_format_source(source)}</span>'
                 f'<span>{stats["fps"]:.1f} <b>fps</b></span>'
                 f'<span>{stats["tracked"]} tracked</span>'
+                + (f'<span>{stats["size"]}</span>' if stats.get("size") else "")
                 + (f'<span title="smoothed time per frame">detect {stats["ms"]["detect"]:.0f} &middot; '
                    f'identify {stats["ms"]["identify"]:.0f} &middot; encode {stats["ms"]["encode"]:.0f} ms</span>'
                    if stats.get("ms") else "") +

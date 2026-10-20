@@ -92,7 +92,7 @@ class ThermalFaceDetector:
     def __init__(self, min_size=(60, 60), scale_factor: float = 1.1, min_neighbors: int = 8,
                  relaxed_min_size=(50, 50), relaxed_scale_factor: float = 1.05,
                  relaxed_min_neighbors: int = 4, relaxed_min_std: float = 20.0,
-                 duplicate_overlap_threshold: float = 0.5):
+                 duplicate_overlap_threshold: float = 0.5, detect_scale: float = 1.0):
         cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         # Separate instances per pass -- see module docstring: one shared classifier
         # called with two different parameter sets every frame could crash OpenCV's
@@ -111,22 +111,45 @@ class ThermalFaceDetector:
         self.relaxed_min_neighbors = relaxed_min_neighbors
         self.relaxed_min_std = relaxed_min_std
         self.duplicate_overlap_threshold = duplicate_overlap_threshold
+        # < 1.0 runs the two Haar passes on a downscaled copy of the CLAHE-enhanced frame
+        # (Haar cost grows with pixel count, so 0.5 is much cheaper) and maps the boxes
+        # back to full-resolution coordinates. 1.0 = original behaviour, unchanged. Can be
+        # changed at any time (read once per detect() call). Trade-off: faces smaller than
+        # roughly min_size at full resolution are no longer reliably found.
+        self.detect_scale = detect_scale
 
     def detect(self, frame_bgr):
         """Return a list of (x, y, w, h) boxes, one per face, largest (closest) first."""
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         enhanced = self.clahe.apply(gray)
 
-        strict = self._raw_detect(self.cascade, enhanced,
-                                   self.scale_factor, self.min_neighbors, self.min_size)
-        relaxed = self._raw_detect(self.relaxed_cascade, enhanced, self.relaxed_scale_factor,
-                                    self.relaxed_min_neighbors, self.relaxed_min_size)
+        scale = self.detect_scale
+        if scale < 1.0:
+            # Haar's training window is 24x24, so a scaled min size can't go below that.
+            small = cv2.resize(enhanced, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            shrink = lambda size: (max(24, int(round(size[0] * scale))),
+                                   max(24, int(round(size[1] * scale))))
+            strict = self._raw_detect(self.cascade, small, self.scale_factor,
+                                       self.min_neighbors, shrink(self.min_size))
+            relaxed = self._raw_detect(self.relaxed_cascade, small, self.relaxed_scale_factor,
+                                        self.relaxed_min_neighbors, shrink(self.relaxed_min_size))
+            strict = [self._unscale(b, scale) for b in strict]
+            relaxed = [self._unscale(b, scale) for b in relaxed]
+        else:
+            strict = self._raw_detect(self.cascade, enhanced,
+                                       self.scale_factor, self.min_neighbors, self.min_size)
+            relaxed = self._raw_detect(self.relaxed_cascade, enhanced, self.relaxed_scale_factor,
+                                        self.relaxed_min_neighbors, self.relaxed_min_size)
         relaxed = [b for b in relaxed if self._looks_like_a_face(gray, b)]
 
         # Largest first, so the dedup pass below keeps the bigger/cleaner box of any pair.
         candidates = sorted(strict + relaxed, key=lambda b: b[2] * b[3], reverse=True)
         faces = self._suppress_duplicates(candidates)
         return [tuple(map(int, b)) for b in faces]
+
+    @staticmethod
+    def _unscale(box, scale):
+        return tuple(int(round(v / scale)) for v in box)
 
     def _looks_like_a_face(self, gray, box):
         """Reject flat/featureless fallback-pass boxes (background) -- see module docstring

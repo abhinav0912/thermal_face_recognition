@@ -174,7 +174,8 @@ class RecognitionStreamer:
                 t3 = time.perf_counter()
                 for k, v in (("detect", t1 - t0), ("identify", t2 - t1), ("encode", t3 - t2)):
                     self._ms[k] = v * 1000 if k not in self._ms else 0.9 * self._ms[k] + 0.1 * v * 1000
-                self._stats = {"fps": fps, "tracked": len(boxes), "error": "", "ms": dict(self._ms)}
+                self._stats = {"fps": fps, "tracked": len(boxes), "error": "", "ms": dict(self._ms),
+                               "size": f"{frame.shape[1]}x{frame.shape[0]}"}
                 if ok:
                     with self._cond:
                         self._jpeg = buf.tobytes()
