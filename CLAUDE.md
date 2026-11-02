@@ -61,8 +61,10 @@ Fast head-only retrain if time matters: `python train.py --epochs 8 --unfreeze_e
 | 2026-10-20 | `live_inference.py` native window, one person | **21.6 FPS** |
 | 2026-10-20 | Streamlit Classic mode | **4.0 fps** |
 | 2026-10-20 | Streamlit Fast stream, full-res detection, 2 tracked | **11.5 fps**: detect 64 ms, identify 13 ms, encode 1 ms per frame (about 78 ms) |
+| 2026-11-02 | `detect()` only, one person at ~158 px face width, same 80 frames timed both ways | Full **52.1 ms**, Half **26.9 ms**; face found in 80/80 frames in both |
+| 2026-11-02 | Same, one person close up (~305 px face width) | Full **45.2 ms**, Half **24.8 ms**; face found in 80/80 frames in both |
 
-Detection (two Haar passes on the full frame) is about 80% of the frame time. **Half-resolution detection has not been timed on the real camera yet.** How many people were in frame for the 21.6 figure is unknown. One older screenshot of the native window shows 27.5 FPS, so the native number varies.
+Detection (two Haar passes on the full frame) is about 80% of the frame time. Half-resolution detection is about 2x faster than full (detect stage only; the whole-pipeline fps with half resolution is **not yet measured**). Faces smaller than ~158 px have not been tried on the camera. Both 2026-11-02 runs had extra boxes in some frames (up to 3 full, 2 half) with only one person in view; likely false detections (only the last frame was inspected). How many people were in frame for the 21.6 figure is unknown. One older screenshot of the native window shows 27.5 FPS, so the native number varies.
 
 ## Architecture of the live system
 ```
@@ -87,7 +89,7 @@ FLIR A50 --RTSP/UDP--> ThermalCamera (reader thread, newest frame)
 | `person_names.py` | id to name in `data/person_names.json`. |
 | `live_inference.py` | Native-window live recognition. |
 | `collect_data.py` | Video capture, about 4 frames/s into `{id}-TD-A-{n}.jpg` plus raw clip in `data/videos/`, and nine angle stills. Asks for a name on new IDs. |
-| `app.py` | Streamlit UI (Emberwatch style). Settings: Run live feed toggle, **Video mode** (Fast stream = default, Classic = old per-frame loop kept as fallback), **Face detection** (Full resolution = default, Half resolution), camera source, checkpoint dir, device, thresholds. Status bar shows fps, tracked count, frame size, per-stage ms. |
+| `app.py` | Streamlit UI (Emberwatch style). Settings: Run live feed toggle, **Video mode** (Fast stream = default, Classic = old per-frame loop kept as fallback), **Half-resolution detection** toggle (ON by default since 2026-11-02; switch it off for full-resolution detection), camera source, checkpoint dir, device, thresholds. Status bar shows fps, tracked count, frame size, per-stage ms. |
 | `stream_server.py` | `RecognitionStreamer`: recognition thread plus MJPEG server (`/stream`, `/snapshot.jpg`, `/stats`) on a local port, 127.0.0.1 only unless env `THERMAL_STREAM_HOST` is set. No authentication. |
 | `.streamlit/config.toml` | Dark and amber theme. |
 | `test_camera_connection.py` | One-off probe for camera ports and RTSP paths. |
@@ -109,7 +111,7 @@ FLIR A50 --RTSP/UDP--> ThermalCamera (reader thread, newest frame)
 
 ## Roadmap
 **Next (small, concrete)**
-1. Time Half-resolution detection on the camera (fps and `detect` ms), and check faces at the normal viewing distance are still found. Full resolution stays the fallback.
+1. ~~Time Half-resolution detection~~ Done for `detect()` (see Measured results); half is now the app default with an on/off toggle. Still open: whole-pipeline fps in the app, and faces smaller than ~158 px.
 2. Fix the false box that gets a real name: stricter face test, or require a stable track before naming, or an "is this a face" check.
 3. Test with two real people in frame (the two-pass detection and dedup were built for this).
 4. Rebalance images across the 5 people, retrain, and **measure held-out accuracy**, including unknown-person rejection with people the model has never seen.
@@ -143,3 +145,4 @@ Background `#16130f`, surface `#211c17`, thermal amber accent `#ff7a2f`, good `#
 - 2026-10-20: User measured 21.6 FPS (native), 4.0 fps (Classic), 11.5 fps (Fast stream). Built MJPEG Fast stream (`stream_server.py`) and the Half-resolution option; fixed the two-click toggle bug. Sandbox-tested only.
 - 2026-10-30: Progress report extended with live-system sections; user edited it; corrected Word version delivered (not applied to the user's Google Doc).
 - 2026-11-02: CLAUDE.md rewritten for a local session: what the project is, goals, current state, how to run, roadmap, report status.
+- 2026-11-02 (local session): Timed full vs half detection on the real camera (see Measured results). `app.py`: the "Face detection" selectbox became a "Half-resolution detection" toggle, ON by default. Checked with Streamlit AppTest that the toggle sets `detector.detect_scale` to 0.5/1.0; not yet looked at in the browser. `live_inference.py` (native window) and the `ThermalFaceDetector` default are unchanged (full). Note: the venv here is `venv\`, not `.venv\`.
