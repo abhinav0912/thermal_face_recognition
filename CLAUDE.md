@@ -1,111 +1,145 @@
-# CLAUDE.md — Thermal Face Recognition
+# CLAUDE.md: Thermal Face Recognition
 
-Project memory for Claude. Read this first in any new or compacted session.
-**Keep it updated:** at the end of any turn that changes code, decisions, setup or open items, edit the relevant section and add a line to the Changelog.
-**Honesty rule (user, 2026-10-07):** in this project always be truthful. If I don't know something, or haven't verified it, say "I do not know" rather than guessing or stating a guess as fact. Label unverified claims as unverified.
-**User preference:** when the user asks for "next steps", walk them through each step one at a time with exact PowerShell commands (they are on Windows 11 PowerShell, not Git Bash) and say what they should see after each.
-**Before editing code, run `git fetch origin` and read `git log origin/main`:** a second Claude session runs in the user's VS Code and commits straight to `main`. Its code was built against the real camera and is the tested line. Don't overwrite it from the sandbox, which can't reach the camera.
+Project memory for Claude Code. Read this first in every session, local or cloud.
+Last rewritten 2026-11-02 for a **local** session on the user's PC (earlier versions were written for a cloud sandbox).
 
-## Goal
-Live person identification from a FLIR A50 thermal camera, for a live demo:
-- Show the person's **name** on their face box; show **Unknown** if not recognised.
+## Working rules (from the user)
+- **Be truthful.** If you don't know something or haven't verified it, say "I do not know". Label unverified claims as unverified. Never present a guess as fact.
+- **When asked for "next steps", walk the user through them one at a time** with exact PowerShell commands, and say what they should see after each step.
+- The user is on **Windows 11, VS Code, PowerShell** (not Git Bash). Use `python -m ...` forms. Use backslash paths in commands.
+- **This is a local session: you can run the real camera, the GPU and the app yourself.** Measure and verify things instead of asking the user to, except where a person has to stand in front of the camera. Earlier cloud sessions could not touch the camera or GPU, so anything marked "sandbox only" below has not been checked on the real hardware.
+- Keep this file current. At the end of any turn that changes code, decisions, setup or open items, edit the relevant section and add a line to the Changelog.
+- Before editing code: `git fetch origin`, check which branch you are on, and read `git log` (see "Git state"). Make small edits; don't overwrite tested code.
+
+## What this project is
+A research project at the Convergence Lab Initiative (CLI), Department of Computer Science, Virginia Commonwealth University. The user is a research assistant. Regular progress reports go to the research advisor.
+
+Most face recognition depends on visible light and fails in the dark. This project does **face recognition from thermal (long-wave infrared) images**, which work in total darkness, with a model called **DualHeadFaceNet**: a MobileNetV2 backbone (RGB-pretrained), a shared 1280 to 512 layer, then two heads, **identity** and **expression**. The research idea is to do identity and expression together.
+
+### Offline research results (July 2026 report, 113-subject dataset, 128x128 thermal images)
+Identity accuracy 90-98%, expression accuracy 80-92%, five expression classes. Augmentation adds about 3.2%, joint training of both heads adds about 5%. Quantization cuts model size 36% and speeds inference 1.3-2x for 1.5% accuracy loss. Training was two-phase: first on paired RGB images (backbone frozen), then fine-tuned on thermal. Known limits: small dataset, sunglasses block thermal emission from the eyes, 128x128 resolution, no correction for ambient temperature, closed-set only.
+
+## What the user is building now (the goal)
+A **live demo system** on a FLIR A50 thermal camera:
+- Show each person's **name** on their face box; show **Unknown** if not recognised.
 - Recognise **several people in one frame**.
-- Collect face data (video capture) so the model can be trained on new people.
-- Add a new person **instantly, without retraining** (gallery fallback), for live enrollment during a demo.
-- A browser frontend (Streamlit) styled as the "Emberwatch" mockup. The on-page title must stay **"Thermal Face Recognition"** (Emberwatch was only a design codename).
-- Expression/emotion detection is **commented out on purpose** (user will return to it later). Search `expression disabled` to find the pieces.
+- **Collect face data** from the camera (video capture) to train on new people.
+- **Enroll a new person instantly, without retraining** (gallery fallback), for live demos.
+- A **browser interface** (Streamlit) styled as the chosen "Emberwatch" mockup. The page title must stay **"Thermal Face Recognition"** (Emberwatch was only a design codename).
+- The live view should feel as smooth as the native OpenCV window.
+- **Expression recognition is switched off on purpose for now** and will come back later. Search `expression disabled` in the code to find the pieces.
 
-## Hardware / environment
-- Camera: FLIR A50, link-local IP `169.254.0.82` (direct Ethernet to the PC). Working stream: `rtsp://169.254.0.82:554/avc`. Web UI at `http://169.254.0.82`.
-- GPU: NVIDIA RTX PRO 6000 Blackwell Max-Q (sm_120), driver CUDA 13.2. Needs a PyTorch build from the CUDA 12.8 index. `pyproject.toml` pins torch/torchvision to `https://download.pytorch.org/whl/cu128` for `uv`.
-- User's machine: Windows 11, VS Code, PowerShell. Project folder: `C:\thermal_face_recognition-main\thermal_face_recognition-main` (double-nested, from a GitHub zip download). The user installs with **plain `pip`** (told to me 2026-10-07). Earlier I wrongly guessed the venv was uv-based; `main` ships `pyproject.toml`/`uv.lock` (from the user's other Claude session) but the user does not use uv. Verified from the user's terminal 2026-10-07: `.venv` has torch `2.11.0+cu128`, `cuda.is_available()` True, Python 3.14.x, and **no pip module** (`python -m pip` → "No module named pip"), which is what a uv-created venv looks like (not confirmed how it was made). All app dependencies were already installed: `python -m streamlit run app.py` starts, loads the 5-person model on cuda. No install step needed. Plain `pip` was "not recognized" in their terminal at one point, so use `python -m pip`. `requirements.txt` would pull CPU-only torch on a fresh venv; for a fresh install use `--index-url https://download.pytorch.org/whl/cu128` for torch/torchvision.
-- The network sits behind a TLS-inspecting corporate proxy (Zscaler); `pyproject.toml` sets `[tool.uv] system-certs = true` for that.
-- Windows gotchas: Git is installed but needed `C:\Program Files\Git\cmd` added to PATH; `.streamlit` is a dot-folder.
-- The Claude sandbox cannot reach the camera, has no GPU, and cannot install torch (the PyTorch download host is blocked; PyPI works). It DOES have headless Chromium (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`) and can pip-install streamlit/opencv-headless/playwright into a scratch venv. So UI behaviour and the stream transport can be tested here with a **stub model + fake camera** (test harness lives in the session scratchpad, not in the repo), but real-camera speed, GPU and recognition quality can only be verified by the user running things locally. Ask for screenshots/terminal output.
-- **Delivering files to the user:** committing to the branch does not give them a download. Use `SendUserFile` for files. Windows renames a re-downloaded file `name (1).py` when `name.py` already exists in the folder (this happened: `app (1).py`, `app (2).py`, `camera (1).py` in their project folder). Prefer making them update via git (`git pull origin claude/thermal-face-recognition-access-hyfolm`) instead of downloading. They were walked through: `git status` → `git restore app.py camera.py` → delete the downloaded `stream_server.py` → `git fetch origin` → `git checkout claude/thermal-face-recognition-access-hyfolm`. Whether they completed that is not confirmed.
+## Where things stand (2026-11-02)
+- Live pipeline works on the real camera: RTSP stream, face detection, tracking, classifier plus gallery fallback, several faces per frame, instant enrollment, data collection tool, Streamlit app.
+- Live model is **identity-only and trained on 5 people** (IDs 120-124), not the 113 subjects. The old 113-person set was retired from the working dataset. No held-out accuracy has been measured for the 5-person model.
+- Speed is the open engineering problem: Streamlit Classic mode ran 4.0 fps, the new MJPEG "Fast stream" mode 11.5 fps, the native window 21.6 FPS (see Measured results).
+- A progress report (original July content plus new live-system sections) exists; see "Progress report".
 
-## Code map (state of `main` at `f655745`)
-| File | Role |
-|---|---|
-| `model.py` | `DualHeadFaceNet` (MobileNetV2, `identity_head`, `expression_head`), `get_embedding()`, `forward_with_embedding()` (one backbone pass gives logits and the gallery embedding). `expression_head` stays so old checkpoints load. |
-| `train.py` | Identity-only training (expression loss commented out). Scans `data/thermal-face-128x128/`, rebuilds `checkpoints/label_map.json`. `cudnn.benchmark`, mixed precision (autocast + GradScaler), OS-aware `--workers` (0 on Windows: workers > 0 deadlocked). Full retrain from pretrained backbone each run. |
-| `inference.py` | `FaceRecognizer`: `predict_image`, `predict_batch` (one batched GPU pass per frame), `embed_image`, name lookup. |
-| `camera.py` | `ThermalCamera`: **background reader thread** (plus a `frame_id` counter so consumers can skip already-seen frames), so `.read()` returns the latest frame instantly and never blocks. `cv2.CAP_FFMPEG` for URLs. RTSP transport defaults to **UDP** (env `THERMAL_CAMERA_RTSP_TRANSPORT=tcp` to switch). |
-| `face_detector.py` | `ThermalFaceDetector`: Haar + CLAHE, **two passes** (strict, then relaxed fallback for off-angle faces) with a grey-value std texture filter on relaxed boxes, overlap-coefficient dedup, per-pass cascade instances and try/except around `detectMultiScale` (intermittent OpenCV crash). `detect_scale` (default 1.0 = unchanged behaviour; 0.5 runs both Haar passes on a downscaled CLAHE frame and maps boxes back; min sizes scaled, floor 24). Crop uses a bigger bottom margin (cascade cuts the chin). `FaceTracker` (one face) and `MultiFaceTracker` (many faces, proximity matching, smoothing, outlier rejection, recovery). |
-| `gallery.py` | Instant enrollment: averaged embeddings in `data/gallery.json`, cosine match (default 0.6). |
-| `person_names.py` | id → name, `data/person_names.json`. |
-| `live_inference.py` | OpenCV-window live recognition: classifier first, gallery fallback below 0.5 confidence, else Unknown. `n` enrolls the largest face, `q` quits. |
-| `collect_data.py` | Video capture (preview, SPACE to start, ~4 frames/s into `{id}-TD-A-{n}.jpg`, raw clip in `data/videos/`) and angle stills. Asks for a name on new IDs. |
-| `app.py` | Streamlit UI in Emberwatch style: two-column layout, no native sidebar. Settings panel: `Run live feed` toggle (**`key="running"`**; the pause button uses `on_click`), **Video mode** (`Fast stream (recommended)` = MJPEG via `stream_server.py`; `Classic (slower)` = old `st.fragment(run_every=0.05)` + `st.image` loop, kept as fallback), **Face detection** (`Full resolution (current)` default / `Half resolution (faster)` → sets `detector.detect_scale` on the shared detector, applies to stream, classic and enrollment), camera source, checkpoint dir, device, thresholds. Status bar (stream mode: fragment refreshed every 1 s) shows LIVE/IDLE, fps, tracked count, frame size, per-stage ms (`detect · identify · encode`), GPU. Camera, tracker, detector, recognizer and the streamer are `st.cache_resource` (one shared instance for all tabs). Switching stream→classic deactivates the streamer first (shared, not thread-safe detector). |
-| `stream_server.py` | **Fast video path (added on the PR branch, untested on real hardware).** `RecognitionStreamer`: background thread runs detect → track → identify → annotate → JPEG, and serves it as an MJPEG stream (`/stream`, also `/snapshot.jpg`, `/stats`) on a local port (127.0.0.1 by default; env `THERMAL_STREAM_HOST`/`THERMAL_STREAM_PORT`). `app.py` embeds it as a plain `<img>` (inline `object-fit:contain`, because Streamlit's CSS makes images `scale-down`), so Streamlit never handles individual frames. Stream URL carries `?g=<generation>` so a pause/resume remounts the image. `/stats` returns fps, tracked, per-stage ms, frame size, `frames_sent`. `set_active(False)` blocks until any in-flight frame finishes, so enrollment can safely use the detector right after pausing. Gallery is reloaded only when `data/gallery.json`'s mtime changes. No auth: binds 127.0.0.1 unless `THERMAL_STREAM_HOST` is set. |
-| `.streamlit/config.toml` | Dark/amber native theme. |
-| `pyproject.toml` | uv project: dependencies, cu128 torch index, system certs. |
-| `test_camera_connection.py` | One-off probe for ports/RTSP paths. |
-| `benchmark.py`, `ablation_study.py`, `error_analysis.py`, `visualization*.py`, `model_export.py` | Older analysis scripts. |
-| `checkpoints/` | Current model: 5 people. `checkpoints_backup_4people_epoch7/` is the previous 4-person model. |
+## Hardware and environment
+- Camera: FLIR A50, link-local IP `169.254.0.82` over direct Ethernet. Stream: `rtsp://169.254.0.82:554/avc`. Camera web UI: `http://169.254.0.82`.
+- GPU: NVIDIA RTX PRO 6000 Blackwell Max-Q (sm_120). Needs PyTorch built for CUDA 12.8. The `.venv` has torch `2.11.0+cu128`, `cuda.is_available()` True (verified 2026-10-07).
+- Project folder: `C:\thermal_face_recognition-main\thermal_face_recognition-main` (double-nested, from a GitHub zip). Activate: `.\.venv\Scripts\Activate.ps1`.
+- The venv has **no pip module** (`python -m pip` fails), which looks like a `uv`-created venv, but how it was made is not confirmed. The user says they use pip. `main` ships `pyproject.toml` and `uv.lock`. Everything the app needs was already installed. `requirements.txt` would pull CPU-only torch on a fresh venv; for a fresh install take torch from `https://download.pytorch.org/whl/cu128`.
+- The network is behind a TLS-inspecting proxy (Zscaler); `pyproject.toml` sets `[tool.uv] system-certs = true` for that.
+- Git is installed but needed `C:\Program Files\Git\cmd` added to PATH. `.streamlit` is a dot-folder.
 
-## Decisions and gotchas (don't re-learn these)
-- `opencv-python` is pinned `<5.0.0` (5.0 had no `CascadeClassifier`).
-- **RTSP: TCP times out opening the stream on this network (30 s FFmpeg timeout); UDP connects immediately.** UDP shows some "corrupted macroblock" log spam; that is harmless noise. Don't force TCP.
-- A blocking `camera.read()` froze the whole Streamlit rerun, hence the reader thread.
-- Haar on thermal frames gives false positives (hairline, chest) and can return several overlapping boxes for one face, so detection is two-pass with dedup and the trackers reject jumps.
-- Closed-set softmax can be confidently wrong on non-face crops. Tracking and consistency matter more than the Unknown threshold alone.
-- Gallery matching is weaker than a trained identity. Anyone worth keeping should be retrained into the classifier.
-- Streamlit: never put a blank line inside the injected `<style>` block (the markdown parser breaks it and prints CSS as text). `st.rerun()` loops flicker the whole page.
-- **Unproven diagnosis:** in the sandbox, with a stub detector/model and a fake camera, the *classic* Streamlit path ran ~18–22 fps, so "Streamlit per-frame overhead" alone may not explain the user's 4 fps. The real cause on their PC is not established; the stream's per-stage timings are there to find it.
-- **Second false box (seen 2026-10-20):** with 2 tracked, the right-hand box sat on the dark background (looks like a false detection, not verified) and was labelled "Chandhini (95%)". Closed-set classifier says a known name even for non-faces. Not fixed. A stricter face/texture filter or a face-vs-non-face check would be the fix.
-- Streamlit fades elements while a rerun is in progress; the faint/dim label text seen in the classic mode is probably that (unverified). The stream mode renders at full brightness.
-- Streamlit's own CSS sets images to `object-fit: scale-down`; override inline if a small frame must stretch.
-- Streamlit toggle: do not pass `value=<its own previous state>` (identity flips, first click dropped). Use `key=`.
-- Half-resolution detection, sandbox benchmark only (synthetic frames: real dataset face crops pasted on a noisy dark background, 4-core CPU, NOT representative of real thermal frames or the user's PC): detect time 3.4x–7x faster at 640x480 and 10x–14x at 1280x960; detection rate was similar for faces >= ~220 px but clearly worse for ~100 px faces (10/40 vs 25/40 at 640x480) and boxes agreed with full-res in only about half of the hits. So Half trades small/distant faces for speed. Real-world effect on the demo is unknown until the user tries it.
-- Streamlit's browser path is inherently slower than `live_inference.py`'s native window; the user wants native-like smoothness. Whether `main`'s current `app.py` is fast enough is **not yet confirmed**.
-- **WebRTC option (parked):** an `streamlit-webrtc` version of `app.py` with a custom server-side `VideoStreamTrack` exists in git history at commit `79ff481` (old branch tip). It was never run. Revive it only if `main`'s Streamlit feed is still too laggy. It predates the camera reader thread and the UDP default, so it needs re-basing on those.
-- Training data: the old 113-person set was deleted (it caused heavy class imbalance). The roster is whoever has been collected live.
-- Delete bad captured frames by filename; numbering gaps are harmless.
+## How to run (PowerShell, project folder, venv active)
+```powershell
+python live_inference.py                      # native window; n = enroll largest face, q = quit
+python live_inference.py --source 0           # test with a webcam instead of the thermal camera
+python -m streamlit run app.py                # browser app at http://localhost:8501
+python collect_data.py                        # capture training data (preview, SPACE to start, q to quit)
+python train.py --epochs 40 --batch_size 32   # full retrain from the pretrained backbone
+python evaluate.py                            # held-out evaluation (reads data/ and checkpoints/)
+```
+Fast head-only retrain if time matters: `python train.py --epochs 8 --unfreeze_epoch 999 --batch_size 128`.
+`train.py` scans `data/thermal-face-128x128/` and rebuilds `checkpoints/label_map.json` each run. Camera transport is UDP; override with env `THERMAL_CAMERA_RTSP_TRANSPORT=tcp` (not recommended, see gotchas).
 
-## Measured results (user's PC, FLIR A50, RTX PRO 6000)
+## Measured results (user's PC)
 | Date | Setup | Result |
 |---|---|---|
 | 2026-10-20 | `live_inference.py` native window, one person | **21.6 FPS** |
-| 2026-10-20 | Streamlit Classic path (`main`'s app.py) | **4.0 fps** |
-| 2026-10-20 | Streamlit **Fast stream**, Full-res detection, 2 tracked | **11.5 fps** (video overlay 10.9); detect 64 ms, identify 13 ms, encode 1 ms per frame (~78 ms total) |
-Detection (two Haar passes on the full frame) is ~80% of the frame time now. Half-res detection and the Classic fallback have not been run by the user yet. How many people were in frame for the 21.6 figure is unknown.
+| 2026-10-20 | Streamlit Classic mode | **4.0 fps** |
+| 2026-10-20 | Streamlit Fast stream, full-res detection, 2 tracked | **11.5 fps**: detect 64 ms, identify 13 ms, encode 1 ms per frame (about 78 ms) |
 
-## People (all 5 are in the trained classifier)
-`data/person_names.json`: 120 Abhinav, 121 Chandhini, 122 Jyothsna, 123 Lakshmi, 124 Asher. Images in `data/thermal-face-128x128/` per id: 120 → 121, 121 → 61, 122 → 113, 123 → 62, 124 → 231. Uneven counts can bias the classifier toward 124.
+Detection (two Haar passes on the full frame) is about 80% of the frame time. **Half-resolution detection has not been timed on the real camera yet.** How many people were in frame for the 21.6 figure is unknown. One older screenshot of the native window shows 27.5 FPS, so the native number varies.
+
+## Architecture of the live system
+```
+FLIR A50 --RTSP/UDP--> ThermalCamera (reader thread, newest frame)
+  -> ThermalFaceDetector (Haar + CLAHE, strict pass + relaxed pass, texture filter, dedup)
+  -> MultiFaceTracker (one track per face, smoothing, jump rejection)
+  -> classifier (identity head), batched on GPU; confidence >= 0.5 -> name
+       else gallery match (cosine >= 0.6) -> name (live-match)
+       else "Unknown"
+  -> boxes drawn -> JPEG -> MJPEG stream -> browser <img>   (Streamlit draws only the UI around it)
+```
+
+## Code map
+| File | Role |
+|---|---|
+| `model.py` | `DualHeadFaceNet`, `get_embedding()` (512-d), `forward_with_embedding()`. `expression_head` stays so old checkpoints load. |
+| `train.py` | Identity-only training (expression loss commented out). Mixed precision, cudnn benchmark, `--workers` defaults to 0 on Windows (workers > 0 deadlocked). |
+| `inference.py` | `FaceRecognizer`: `predict_image`, `predict_batch` (one GPU pass per frame), `embed_image`. |
+| `camera.py` | `ThermalCamera`: background reader thread, `.read()` never blocks, `frame_id` counter, forces `cv2.CAP_FFMPEG`, UDP by default. |
+| `face_detector.py` | `ThermalFaceDetector` (two-pass Haar, `detect_scale` 1.0 default, 0.5 = half-resolution), `FaceTracker` (one face), `MultiFaceTracker`. Crop has a bigger bottom margin (0.45) because the cascade cuts off the chin. |
+| `gallery.py` | Instant enrollment: averaged embeddings in `data/gallery.json`. |
+| `person_names.py` | id to name in `data/person_names.json`. |
+| `live_inference.py` | Native-window live recognition. |
+| `collect_data.py` | Video capture, about 4 frames/s into `{id}-TD-A-{n}.jpg` plus raw clip in `data/videos/`, and nine angle stills. Asks for a name on new IDs. |
+| `app.py` | Streamlit UI (Emberwatch style). Settings: Run live feed toggle, **Video mode** (Fast stream = default, Classic = old per-frame loop kept as fallback), **Face detection** (Full resolution = default, Half resolution), camera source, checkpoint dir, device, thresholds. Status bar shows fps, tracked count, frame size, per-stage ms. |
+| `stream_server.py` | `RecognitionStreamer`: recognition thread plus MJPEG server (`/stream`, `/snapshot.jpg`, `/stats`) on a local port, 127.0.0.1 only unless env `THERMAL_STREAM_HOST` is set. No authentication. |
+| `.streamlit/config.toml` | Dark and amber theme. |
+| `test_camera_connection.py` | One-off probe for camera ports and RTSP paths. |
+| Older scripts | `benchmark.py`, `ablation_study.py`, `error_analysis.py`, `visualization*.py`, `model_export.py` still reference expression and were deliberately left alone. `complete_pipeline.py`, `prepare_data.py` and `extract_metrics.py` also exist and were not reviewed. Many `*.md` files in the repo root are older generated docs and may be stale. |
+
+## Data and people
+`data/person_names.json`: 120 Abhinav (the user), 121 Chandhini, 122 Jyothsna, 123 Lakshmi, 124 Asher. Images in `data/thermal-face-128x128/`: 120 has 121, 121 has 61, 122 has 113, 123 has 62, 124 has 231. Uneven counts may bias the classifier toward 124 (unchecked). Delete bad captured frames by filename; numbering gaps are harmless. Checkpoints: `checkpoints/` (current, 5 people), `checkpoints_backup_4people_epoch7/` (previous). The old 113-person data was moved out of the working set (`data/Temp/` is gitignored).
+
+## Decisions and gotchas (don't re-learn these)
+- `opencv-python` is pinned `<5.0.0` (5.0 had no `CascadeClassifier`).
+- **RTSP: TCP times out opening the stream on this network (30 s); UDP connects at once.** UDP prints "corrupted macroblock" warnings; they are harmless. Don't force TCP.
+- Haar on thermal frames gives false positives (hairline, chest, dark background) and overlapping boxes, so detection is two-pass with dedup and trackers reject jumps. The classifier is closed-set, so it can name a non-face confidently. **Open bug:** with 2 tracked, a second box on the dark background (probably a false detection, unverified) was labelled with a real name at 95%.
+- Gallery matching is weaker than a trained identity. Anyone worth keeping should be retrained into the classifier.
+- Streamlit rules: no blank line inside an injected `<style>` block (the markdown parser prints the CSS as text). Don't loop `st.rerun()` (flicker). Toggle uses `key=`, not `value=<own state>` (first click got dropped). Streamlit's CSS sets images to `object-fit: scale-down`; the stream `<img>` overrides it inline. Streamlit fades elements while a rerun runs, which probably explains dim labels in Classic mode (unverified).
+- The detector is **not thread-safe**. `RecognitionStreamer.set_active(False)` waits for the in-flight frame so enrollment can use the detector safely.
+- **Unproven diagnosis:** in a cloud-sandbox test with fake camera and model, Classic mode ran about 18-22 fps, so "Streamlit per-frame overhead" may not fully explain the 4.0 fps. The cause on the real PC is not established; the per-stage timings in the status bar exist to find it.
+- **Half-resolution detection, sandbox benchmark only** (real dataset face crops pasted on a noisy dark background, not representative): 3.4x to 14x faster, similar detection rate for faces of about 220 px or more, clearly fewer detections for faces of about 100 px (10 of 40 against 25 of 40 at 640x480). Real effect on the demo is unknown until tried on the camera.
+- WebRTC (`streamlit-webrtc` with a custom server-side video track) was built once and never run; it is in git history at commit `79ff481`. Revive only if the MJPEG stream is smooth server-side but looks choppy in the browser.
+
+## Roadmap
+**Next (small, concrete)**
+1. Time Half-resolution detection on the camera (fps and `detect` ms), and check faces at the normal viewing distance are still found. Full resolution stays the fallback.
+2. Fix the false box that gets a real name: stricter face test, or require a stable track before naming, or an "is this a face" check.
+3. Test with two real people in frame (the two-pass detection and dedup were built for this).
+4. Rebalance images across the 5 people, retrain, and **measure held-out accuracy**, including unknown-person rejection with people the model has never seen.
+5. Merge PR #1 so `main` has the fast stream and the other changes.
+
+**If speed is still short of the native 21.6 FPS:** run detection and identification in parallel threads, or detect on every second frame (lags when people move).
+
+**Later**
+- Re-enable expression recognition in the live pipeline (the head and checkpoints still support it).
+- Video-based temporal training (use motion across frames instead of single images), the long-term research direction from the July report.
+- Address the report's open limits: more subjects, sunglasses/eyewear, ambient-temperature correction, 128x128 resolution.
+
+## Progress report
+- The July 2026 report (5 pages, written in Google Docs) was extended with new sections on the live system: Claude Doc https://claude.ai/artifact/JoiCYoCEHEBDZGVrEdZXEB . The user then edited their own Google Doc copy (renumbered sections, "Progress Report (October)").
+- A corrected version of that Google Doc (section references, formula, figure captions, date, dashes, hyphens, grammar) was produced as a Word file, but it was **not** applied to the user's Google Doc (no Google Docs editing tool was available). The user was given steps to paste it in.
+- Still the user's call in the report: the phrase "lab PC" was assumed, "tested in a headless browser here" in 5.8, a table note "number of people not recorded", the Executive Summary does not mention the live system, Figure 5 shows 27.5 FPS while the text says 21.6 FPS, Figure 6 shows other people's names.
+- Update the report's numbers if Half-resolution timings or held-out accuracy are measured.
 
 ## Git state
-- Repo: `abhinav0912/thermal_face_recognition`. My branch: `claude/thermal-face-recognition-access-hyfolm`. **PR #1** already exists (don't create another; pushing updates it).
-- 2026-10-07: the user chose `main` as the base. I merged `origin/main` (`f655745`) into my branch and took main's version of every file, so the branch tree equals `main` plus this updated `CLAUDE.md`. My earlier work stays in history.
-- 2026-10-20 commits on the branch: `7786cb7` (fast stream + toggle fix) plus the later detection-resolution commit. The user's local checkout was on `main` and had downloaded copies; they need to switch to the branch (see Environment) or merge PR #1. `main` itself still lacks all of this until PR #1 is merged.
-- Day to day, commits come from both sessions. Fetch before changing anything; prefer small, additive edits to files `main` has changed.
-- Commit trailer: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01TJZd3mBmQxiwUcHN8fftky`.
+- Repo: `abhinav0912/thermal_face_recognition`. Branches: `main` (tested earlier on the real camera, still lacks the fast stream, Half-resolution option and toggle fix) and `claude/thermal-face-recognition-access-hyfolm` (adds `stream_server.py`, Video mode and Face detection selectors, `ThermalCamera.frame_id`, toggle fix, this file). **PR #1** is open for that branch; pushing to the branch updates it. Don't open another PR.
+- As of 2026-11-02 `origin/main` is `f655745`; the branch tip was `3530bad`. Check with `git fetch origin` and `git log --oneline origin/main -5`.
+- The user's local checkout was switched to the branch on 2026-10-20 (their `git status` showed it). Confirm with `git branch --show-current`.
+- Windows renames re-downloaded files to `name (1).py`. Update code through git, not by downloading files.
+- Commits may be authored by this local session or by earlier cloud sessions. Don't force-push or rewrite history. Optional commit trailer: `Co-Authored-By: Claude <noreply@anthropic.com>`.
 
 ## Design (Emberwatch)
-Dark warm charcoal `#16130f`, surface `#211c17`, thermal amber accent `#ff7a2f`, good `#5fd98a`, info `#4fc3e8`, alert `#ff5c72`. Fonts: Archivo Expanded (headings), IBM Plex Sans (body), IBM Plex Mono (data). Mockups: https://claude.ai/artifact/Sv5fAR9WoP9gKk26dGSJoi (chosen) and https://claude.ai/artifact/Kn7TvE2UA5dsD1AD5umHML (5 alternatives, not chosen).
-
-## Open items
-1. **User tests Half-resolution detection** (Settings → Face detection) with the fast stream: report fps and the `detect · identify · encode` ms, and whether people/faces are missed at their normal distance. Full resolution stays the default and the fallback.
-2. User should confirm they are running the branch code (stream mode visible in Settings) via git, not via downloaded `(1)` copies. Their screenshot at 7:11 PM showed Fast stream running, so the files did get in place.
-3. Second false box labelled with a real name (see gotchas). Candidate fixes: stricter filter, require tracker persistence before naming, add an "is a face" check. Not started.
-4. If still slower than the native 21.6 FPS after Half-res: pipeline detection and identification on separate threads (cap = slowest stage), or detect every 2nd frame (lags when moving). Not built.
-5. Live test with two real people in frame (two-pass detection and dedup were added for this).
-6. Rebalance training data across the 5 people if recognition favours Asher (231 images vs 61–121).
-7. Expression detection to be re-enabled later; older analysis scripts still reference expression.
-8. Merge/close PR #1 once the user is happy; then they can stay on `main` and `git pull`.
-9. Unanswered question to the user: is the person in the 2026-10-20 screenshots really Chandhini (name shown 80–95%)? If not, that is a misrecognition to investigate.
-10. WebRTC (commit `79ff481`) stays parked; only revisit if the MJPEG stream is smooth on the server side but looks choppy in the browser.
+Background `#16130f`, surface `#211c17`, thermal amber accent `#ff7a2f`, good `#5fd98a`, info `#4fc3e8`, alert `#ff5c72`. Fonts: Archivo Expanded (headings), IBM Plex Sans (body), IBM Plex Mono (data). Chosen mockup: https://claude.ai/artifact/Sv5fAR9WoP9gKk26dGSJoi (five unchosen alternatives: https://claude.ai/artifact/Kn7TvE2UA5dsD1AD5umHML).
 
 ## Changelog
-- 2026-10-06: Created this file.
-- 2026-10-07: Learned `main` has substantial tested work (threaded UDP camera, two-pass detection, batched GPU inference, AMP training, uv packaging, Emberwatch app, 5-person retrain). Merged it into the PR branch with main as the base and rewrote this file to match. WebRTC app parked at `79ff481`.
-- 2026-10-07: Recorded the user's preference to be walked through next steps step by step.
-- 2026-10-07: Corrected the uv assumption (user uses pip). Added the honesty rule.
-- 2026-10-07: User ran `main`'s app.py: starts fine (model loaded, 5 persons, cuda) but the video is still slow. Cause not yet known; asked for the app's on-screen fps and `live_inference.py`'s window-title FPS to tell compute-bound from browser-transport-bound.
-- 2026-10-20: Measured by the user on the same machine, one person in frame: `live_inference.py` native window **21.6 FPS**; Streamlit `app.py` status bar **4.0 fps** (page claims a 20fps target). Same detector/model/camera in both, so the model is not the bottleneck; the loss is in the Streamlit per-tick rerun / image transport (exact split inside that is NOT profiled). Next: replace the per-frame `st.image` path (candidates: MJPEG stream from a background thread, or the parked WebRTC version); neither is tested. Also noted: box label text is dark green on a dark frame and hard to read.
-- 2026-10-20: Built the MJPEG fast-stream mode (`stream_server.py`, `Video mode` selector in `app.py`, `ThermalCamera.frame_id`). Also fixed a bug reproduced on main's original `app.py` (sandbox Streamlit 1.66): the `Run live feed` toggle needed two clicks to turn off because `value=` changed with its own state; now `key="running"` and the pause button uses `on_click`. Sandbox-tested only with stubs.
-- 2026-10-20: User ran the fast stream on the real camera: **11.5 fps** (was 4.0 in Classic; native window 21.6). Per-frame: detect 64 ms, identify 13 ms, encode 1 ms. Observed a second, probably false box on the background labelled "Chandhini (95%)".
-- 2026-10-20: Added `detect_scale` to `ThermalFaceDetector` (default 1.0 = identical to before) and a **Face detection** selector in `app.py` (Full = default/fallback, Half = faster), plus frame size in the status bar. Sandbox: switching Full↔Half live works with no errors; with the real Haar detector on synthetic frames detect time dropped ~120–130 ms → ~25 ms (not representative of the user's PC). Detection-rate trade-off for small faces recorded in gotchas.
-- 2026-10-20: Delivery notes: files must be sent with `SendUserFile` (commits are not downloads); duplicates `name (1).py` come from re-downloading into a folder that already has the file; use git to update.
-- 2026-10-30: Created the updated progress report as a Claude Doc: https://claude.ai/artifact/JoiCYoCEHEBDZGVrEdZXEB . Original 19 July 2026 report (Exec Summary, Sections 1-6, its 3 figures) reproduced verbatim; new Sections 7-8 added (live A50 pipeline, detection/tracking, data collection, classifier + gallery, 5-person retrain, Streamlit app, MJPEG stream + Half-res detection with the measured 4.0 / 11.5 / 21.6 fps numbers, current issues, next steps) plus a pipeline diagram. Names of the 5 enrolled people were deliberately left out (IDs only). The user's original PDF is not in the repo. Facts in Sections 7-8 are taken from this file; anything unverified is labelled as such in the doc. If measurements change (e.g. Half-res timings on the camera), update that doc and this file.
-- 2026-10-30: User edited the report in Google Docs (renumbered Sections 5-7, dropped the original Future Work and Conclusion). Reviewed it and fixed the must-fix items (stale "Section 7.7" refs, dangling Section 5/6 references, raw LaTeX formula, leftover caption, missing date, missing dashes, hyphens, grammar). The Google Docs editor connector was not available, only Google Drive (read/copy/rename, no text edits), so the fixes were applied to an exported .docx and delivered as a file with `SendUserFile`; the user's original Google Doc was NOT changed. Left for the user to decide: "lab PC" wording (assumed), "here" in 5.8, unfinished-sounding table note, Executive Summary not mentioning the live system, Figure 5 shows 27.5 FPS vs 21.6 FPS in the text, Figure 6 shows other people's names.
+- 2026-10: Camera link found and working over RTSP/UDP. Data collection, tracking and live recognition built. Gallery fallback for instant enrollment. Streamlit app in Emberwatch style. Expression disabled on purpose. Retrained on 5 people (IDs 120-124).
+- 2026-10-20: User measured 21.6 FPS (native), 4.0 fps (Classic), 11.5 fps (Fast stream). Built MJPEG Fast stream (`stream_server.py`) and the Half-resolution option; fixed the two-click toggle bug. Sandbox-tested only.
+- 2026-10-30: Progress report extended with live-system sections; user edited it; corrected Word version delivered (not applied to the user's Google Doc).
+- 2026-11-02: CLAUDE.md rewritten for a local session: what the project is, goals, current state, how to run, roadmap, report status.
