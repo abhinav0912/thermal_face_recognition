@@ -51,6 +51,7 @@ import gallery
 from camera import ThermalCamera, DEFAULT_RTSP_URL
 from face_detector import ThermalFaceDetector, MultiFaceTracker
 from inference import FaceRecognizer
+from label_smoother import LabelSmoother, decide, format_label
 from person_names import load_names
 from stream_server import RecognitionStreamer, embed_html, STREAM_HOST
 
@@ -171,6 +172,12 @@ def get_tracker():
 
 
 @st.cache_resource
+def get_smoother():
+    # Used by the Classic loop only; the fast stream keeps its own (RecognitionStreamer.smoother).
+    return LabelSmoother()
+
+
+@st.cache_resource
 def get_streamer(_detector, _tracker):
     # Process-wide for the same reason as the camera/tracker above: one pipeline, one
     # HTTP stream, shared by every open tab (so tabs share the Run/Pause state too).
@@ -186,19 +193,11 @@ def identify_all(recognizer, gallery_data, crops_bgr, unknown_threshold, gallery
     face -- with several people in frame this is one GPU call instead of N, and the
     gallery-fallback embedding comes from that same pass instead of a second
     backbone run per low-confidence face. Returns a label per crop, in the same
-    order as `crops_bgr`."""
+    order as `crops_bgr`. Each one is a label_smoother.Decision; the caller may smooth them
+    over time (LabelSmoother) and turns them into text with format_label()."""
     pil_imgs = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crops_bgr]
-    labels = []
-    for result, embedding in recognizer.predict_batch(pil_imgs, top_k=1):
-        if result["person_conf"] >= unknown_threshold:
-            labels.append((f"{result['person_name']} ({result['person_conf']*100:.0f}%)", True))
-            continue
-        gallery_name, sim = gallery.match(embedding, gallery_data, threshold=gallery_threshold)
-        if gallery_name:
-            labels.append((f"{gallery_name} ({sim*100:.0f}% live-match)", True))
-        else:
-            labels.append(("Unknown", False))
-    return labels
+    return [decide(result, embedding, gallery_data, unknown_threshold, gallery_threshold)
+            for result, embedding in recognizer.predict_batch(pil_imgs, top_k=1)]
 
 
 def annotate(frame, box, label, known):
@@ -229,6 +228,11 @@ def render_settings_panel():
                  "faster on the A50 (measured), but small/distant faces may be missed. "
                  "Off: full-resolution detection. Switch off if people are missed or the "
                  "boxes look worse.")
+        smooth_names = st.toggle(
+            "Smooth names over time", value=True, key="smooth_names",
+            help="On (default): a name is only shown when most of the last ~15 frames agree, "
+                 "otherwise the face shows Unknown. Stops the name flipping between people "
+                 "from frame to frame. Off: each frame's raw answer is shown.")
 
         source = st.text_input("Camera source (RTSP URL or webcam index)", value=DEFAULT_RTSP_URL)
         checkpoint_dir = st.text_input("Checkpoint directory", value="checkpoints")
@@ -237,7 +241,7 @@ def render_settings_panel():
         unknown_threshold = st.slider("Unknown threshold (classifier)", 0.0, 1.0, 0.5, 0.05)
         gallery_threshold = st.slider("Gallery match threshold", 0.0, 1.0, 0.6, 0.05)
     return (running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold,
-            video_mode, half_res_detection)
+            video_mode, half_res_detection, smooth_names)
 
 
 def render_roster_panel(names: dict, gallery_data: dict):
@@ -281,7 +285,7 @@ left_col, right_col = st.columns([2, 1], gap="medium")
 
 with right_col:
     (running, source, checkpoint_dir, device_arg, unknown_threshold, gallery_threshold,
-     video_mode, half_res_detection) = render_settings_panel()
+     video_mode, half_res_detection, smooth_names) = render_settings_panel()
 
     names = load_names()
     gallery_data = gallery.load_gallery()
@@ -340,17 +344,21 @@ def live_feed():
                 tracks = tracker.update(detector.detect(frame))
                 tracked_count = len(tracks)
 
-                boxes, crops = [], []
-                for box in tracks.values():
+                ids, boxes, crops = [], [], []
+                for tid, box in tracks.items():
                     crop = detector.crop(frame, box)
                     if crop.size == 0:
                         continue
+                    ids.append(tid)
                     boxes.append(box)
                     crops.append(crop)
 
-                labels = identify_all(recognizer, gallery_data, crops,
-                                       unknown_threshold, gallery_threshold)
-                for box, (label, known) in zip(boxes, labels):
+                decisions = identify_all(recognizer, gallery_data, crops,
+                                         unknown_threshold, gallery_threshold)
+                if smooth_names:
+                    decisions = get_smoother().update(ids, decisions)
+                for box, decision in zip(boxes, decisions):
+                    label, known = format_label(decision)
                     annotate(frame, box, label, known)
 
                 status_html = (
@@ -432,6 +440,9 @@ if video_mode == STREAM_MODE:
             camera = get_camera(source)
         except ConnectionError as e:
             st.error(f"Could not open camera: {e}")
+    if streamer.smoothing_enabled and not smooth_names:
+        streamer.smoother.reset()   # forget old votes so switching back on starts clean
+    streamer.smoothing_enabled = smooth_names
     if camera is not None:
         streamer.configure(camera, recognizer, unknown_threshold, gallery_threshold)
         streamer.set_active(True)

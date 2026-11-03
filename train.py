@@ -72,6 +72,7 @@ class ThermalFaceDataset(Dataset):
         self.transform = transform
         self.samples = []          # list of (path, person_0idx, expr_0idx_or_-1)
         self.frame_index = []      # per sample: the frame number from the filename (capture order)
+        self.frame_mode = []       # per sample: 'A' (angle/video frame) or 'E' (expression still)
         self.person_ids = []       # sorted list of unique integer person ids
 
         folder = Path(folder)
@@ -93,6 +94,7 @@ class ThermalFaceDataset(Dataset):
             expr_lbl = (idx - 1) if mode == "E" else -1   # 0-based; -1 means N/A
             self.samples.append((img_path, person_lbl, expr_lbl))
             self.frame_index.append(idx)
+            self.frame_mode.append(mode)
 
         print(f"  Loaded {len(self.samples)} images | "
               f"{len(self.person_ids)} persons | folder: {folder.name}"
@@ -143,8 +145,41 @@ def load_exclusions(path):
         return {ln.split("#")[0].strip() for ln in f if ln.split("#")[0].strip()}
 
 
-def split_indices(ds, val_frac, mode, seed=42):
+def load_sessions(path):
+    """Capture sessions logged by collect_data.py (one JSON object per line), grouped by
+    person id. Returns {} if there is no log."""
+    sessions = {}
+    if not path or not os.path.exists(path):
+        return sessions
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entry = json.loads(line)
+                sessions.setdefault(int(entry["person_id"]), []).append(entry)
+    return sessions
+
+
+def _session_of(sessions_for_person, mode, frame):
+    """(started, session_id) of the logged session that contains this frame; frames that
+    no logged session covers (everything recorded before the log existed, and expression
+    stills) all count as one 'legacy' session, treated as the oldest."""
+    if mode == "A":
+        for s in sessions_for_person:
+            if "frame_list" in s and frame in s["frame_list"]:
+                return s["started"], s["session_id"]
+            if "first_frame" in s and s["first_frame"] <= frame <= s["last_frame"]:
+                return s["started"], s["session_id"]
+    return "", "legacy"
+
+
+def split_indices(ds, val_frac, mode, seed=42, sessions=None):
     """Returns (train_idx, val_idx) into `ds.samples`.
+
+    'session': for each person, the most recent logged capture session (see collect_data.py
+    and load_sessions) is held out whole. That tests the model on a recording it has never
+    seen frames from, which is what the live camera is. A person with only one session
+    (e.g. only legacy data) falls back to 'block' for that person, with a printed warning.
 
     'block': for each person, the LAST val_frac of their frames (by capture order, i.e. the
     number in the file name) are held out. Frames are captured ~4 per second, so a random
@@ -162,8 +197,22 @@ def split_indices(ds, val_frac, mode, seed=42):
     for i, (_, person_lbl, _) in enumerate(ds.samples):
         by_person.setdefault(person_lbl, []).append(i)
     train_idx, val_idx = [], []
-    for idxs in by_person.values():
+    for label, idxs in by_person.items():
         idxs.sort(key=lambda i: ds.frame_index[i])
+        if mode == "session":
+            pid = ds.person_ids[label]
+            mine = (sessions or {}).get(pid, [])
+            groups = {}
+            for i in idxs:
+                started, sid = _session_of(mine, ds.frame_mode[i], ds.frame_index[i])
+                groups.setdefault((started, sid), []).append(i)
+            if len(groups) >= 2:
+                latest = max(groups)                      # newest 'started' (legacy sorts first)
+                for key, members in groups.items():
+                    (val_idx if key == latest else train_idx).extend(members)
+                continue
+            print(f"  WARNING: person {pid} has only one capture session; "
+                  f"falling back to a block split for them.")
         n_val = max(1, int(round(len(idxs) * val_frac)))
         train_idx += idxs[:-n_val]
         val_idx += idxs[-n_val:]
@@ -351,7 +400,8 @@ def main(args):
     full_ds = ThermalFaceDataset(thermal_dir, transform=train_tf, exclude=exclude)
     val_full_ds = ThermalFaceDataset(thermal_dir, transform=val_tf, exclude=exclude)
 
-    train_idx, val_idx = split_indices(full_ds, args.val_split, args.split_mode)
+    train_idx, val_idx = split_indices(full_ds, args.val_split, args.split_mode,
+                                       sessions=load_sessions(args.sessions_file))
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(val_full_ds, val_idx)
     n_train, n_val = len(train_ds), len(val_ds)
@@ -492,9 +542,14 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",    type=int, default=32)
     parser.add_argument("--lr",            type=float, default=1e-3)
     parser.add_argument("--val_split",     type=float, default=0.15)
-    parser.add_argument("--split_mode",    choices=["block", "random"], default="block",
+    parser.add_argument("--split_mode",    choices=["block", "random", "session"], default="block",
                         help="block = hold out the last frames of each person (default, no "
-                             "near-duplicate leak); random = the old random-frame split")
+                             "near-duplicate leak); session = hold out each person's newest "
+                             "logged capture session (needs data/sessions.jsonl from "
+                             "collect_data.py, the most honest check); random = the old "
+                             "random-frame split")
+    parser.add_argument("--sessions_file", default=os.path.join("data", "sessions.jsonl"),
+                        help="Capture-session log written by collect_data.py")
     parser.add_argument("--exclude_file",  default=os.path.join("data", "excluded_images.txt"),
                         help="Text file of image names to skip (not deleted from disk)")
     parser.add_argument("--no_class_weights", dest="class_weights", action="store_false",

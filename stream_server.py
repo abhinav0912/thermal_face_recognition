@@ -14,8 +14,8 @@ frames: this module detects/tracks/identifies on its own thread (exactly the
 same steps as live_inference.py) and pushes JPEGs straight to the browser.
 Streamlit only draws the surrounding UI.
 
-Standard library + OpenCV only (no Streamlit import), so it can be tested on
-its own. app.py supplies the identify/annotate callables, so this module
+Standard library + OpenCV (+ label_smoother.py) only (no Streamlit import), so it can
+be tested on its own. app.py supplies the identify/annotate callables, so this module
 doesn't duplicate any recognition logic.
 
 Security: the stream has no authentication, so it binds to 127.0.0.1 by
@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 
+from label_smoother import LabelSmoother, format_label
+
 STREAM_HOST = os.environ.get("THERMAL_STREAM_HOST", "127.0.0.1")
 STREAM_PORT = int(os.environ.get("THERMAL_STREAM_PORT", "0"))  # 0 = pick a free port
 BOUNDARY = "frame"
@@ -40,8 +42,10 @@ BOUNDARY = "frame"
 class RecognitionStreamer:
     """
     identify_fn(recognizer, gallery_data, crops_bgr, unknown_threshold,
-                gallery_threshold) -> [(label, known), ...]   (one per crop)
+                gallery_threshold) -> [Decision, ...]   (one per crop, see label_smoother.py)
     annotate_fn(frame, box, label, known) -> None   (draws on frame in place)
+
+    Names are steadied over time by self.smoother unless self.smoothing_enabled is False.
     """
 
     def __init__(self, detector, tracker, identify_fn, annotate_fn,
@@ -53,8 +57,10 @@ class RecognitionStreamer:
         self.gallery_loader = gallery_loader
         self.gallery_path = gallery_path
         self.jpeg_quality = jpeg_quality
+        self.smoother = LabelSmoother()
+        self.smoothing_enabled = True
 
-        self._cfg = None            # (camera, recognizer, unknown_thr, gallery_thr)
+        self._cfg = None           # (camera, recognizer, unknown_thr, gallery_thr)
         self._cfg_lock = threading.Lock()
         self._active = threading.Event()
         self._work_lock = threading.Lock()   # held while a frame is being processed
@@ -146,17 +152,21 @@ class RecognitionStreamer:
                     self._refresh_gallery()
                     tracks = self.tracker.update(self.detector.detect(frame))
                     t1 = time.perf_counter()
-                    boxes, crops = [], []
-                    for box in tracks.values():
+                    ids, boxes, crops = [], [], []
+                    for tid, box in tracks.items():
                         crop = self.detector.crop(frame, box)
                         if crop.size == 0:
                             continue
+                        ids.append(tid)
                         boxes.append(box)
                         crops.append(crop)
-                    labels = self.identify_fn(recognizer, self._gallery, crops,
-                                              unknown_thr, gallery_thr) if crops else []
+                    decisions = self.identify_fn(recognizer, self._gallery, crops,
+                                                 unknown_thr, gallery_thr) if crops else []
+                    if self.smoothing_enabled:
+                        decisions = self.smoother.update(ids, decisions)
                     t2 = time.perf_counter()
-                    for box, (label, known) in zip(boxes, labels):
+                    for box, decision in zip(boxes, decisions):
+                        label, known = format_label(decision)
                         self.annotate_fn(frame, box, label, known)
                 except Exception as e:   # keep the stream alive on a bad frame
                     self._stats["error"] = f"{type(e).__name__}: {e}"
