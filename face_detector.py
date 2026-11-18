@@ -42,10 +42,22 @@ std >= 40 (thermal edges/features -- hairline, glasses, nose bridge) while
 every background false positive had std <= 11 (flat, textureless regions
 that only coincidentally satisfied the cascade's gradient pattern). A
 threshold of 20 sits with wide margin on both sides of that observed split.
-This filter is applied only to the fallback pass's *extra* boxes, not the
-strict pass -- strict produced zero false positives in that same test, so
-there's nothing to gain by filtering it, and doing so would risk rejecting
-a genuine strict detection on an unusually uniform-temperature face.
+At first this filter was applied only to the fallback pass's *extra* boxes,
+because strict produced zero false positives in that test. Longer recordings
+of an EMPTY scene on the real camera (600 frames, 2026-11-02) showed that was
+too optimistic: the strict pass alone put a 63-85 px box on blank wall or
+furniture in about 7% of full-resolution frames, every one with std 5-12 (and
+those boxes were then named by the classifier). So the same std test now runs
+on every box (strict_min_std, default 20). Real faces clear it: 576 of 588
+dataset face crops have std >= 20, and the other 12 are blank-background
+crops that were mislabelled as people (see CLAUDE.md).
+
+A live recording with one person in view then showed a second, subtler kind of
+false box: on the dark background right beside the head, partly touching the
+bright edge of it, so its std was 20-24 (just over the threshold). It was 41-60
+grey levels darker than the frame's mean grey level while the real face was
+12-20 brighter, so boxes more than min_rel_brightness (-10) below the frame mean
+are rejected too. Checked in one scene with one person only.
 
 One more duplicate source needed fixing after the above shipped: caught live
 against real footage, MultiFaceTracker would occasionally show 2-3 boxes on
@@ -92,7 +104,8 @@ class ThermalFaceDetector:
     def __init__(self, min_size=(60, 60), scale_factor: float = 1.1, min_neighbors: int = 8,
                  relaxed_min_size=(50, 50), relaxed_scale_factor: float = 1.05,
                  relaxed_min_neighbors: int = 4, relaxed_min_std: float = 20.0,
-                 duplicate_overlap_threshold: float = 0.5):
+                 duplicate_overlap_threshold: float = 0.5, detect_scale: float = 1.0,
+                 strict_min_std: float = 20.0, min_rel_brightness=-10.0):
         cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         # Separate instances per pass -- see module docstring: one shared classifier
         # called with two different parameter sets every frame could crash OpenCV's
@@ -110,30 +123,68 @@ class ThermalFaceDetector:
         self.relaxed_scale_factor = relaxed_scale_factor
         self.relaxed_min_neighbors = relaxed_min_neighbors
         self.relaxed_min_std = relaxed_min_std
+        self.strict_min_std = strict_min_std
+        # A box whose mean grey level is more than this far BELOW the whole frame's mean is
+        # rejected (None = off). Measured 2026-11-02: real face +12..+20 vs frame mean, false
+        # boxes on the dark background next to it -41..-60.
+        self.min_rel_brightness = min_rel_brightness
         self.duplicate_overlap_threshold = duplicate_overlap_threshold
+        # < 1.0 runs the two Haar passes on a downscaled copy of the CLAHE-enhanced frame
+        # (Haar cost grows with pixel count, so 0.5 is much cheaper) and maps the boxes
+        # back to full-resolution coordinates. 1.0 = original behaviour, unchanged. Can be
+        # changed at any time (read once per detect() call). Trade-off: faces smaller than
+        # roughly min_size at full resolution are no longer reliably found.
+        self.detect_scale = detect_scale
 
     def detect(self, frame_bgr):
         """Return a list of (x, y, w, h) boxes, one per face, largest (closest) first."""
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         enhanced = self.clahe.apply(gray)
 
-        strict = self._raw_detect(self.cascade, enhanced,
-                                   self.scale_factor, self.min_neighbors, self.min_size)
-        relaxed = self._raw_detect(self.relaxed_cascade, enhanced, self.relaxed_scale_factor,
-                                    self.relaxed_min_neighbors, self.relaxed_min_size)
-        relaxed = [b for b in relaxed if self._looks_like_a_face(gray, b)]
+        scale = self.detect_scale
+        if scale < 1.0:
+            # Haar's training window is 24x24, so a scaled min size can't go below that.
+            small = cv2.resize(enhanced, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            shrink = lambda size: (max(24, int(round(size[0] * scale))),
+                                   max(24, int(round(size[1] * scale))))
+            strict = self._raw_detect(self.cascade, small, self.scale_factor,
+                                       self.min_neighbors, shrink(self.min_size))
+            relaxed = self._raw_detect(self.relaxed_cascade, small, self.relaxed_scale_factor,
+                                        self.relaxed_min_neighbors, shrink(self.relaxed_min_size))
+            strict = [self._unscale(b, scale) for b in strict]
+            relaxed = [self._unscale(b, scale) for b in relaxed]
+        else:
+            strict = self._raw_detect(self.cascade, enhanced,
+                                       self.scale_factor, self.min_neighbors, self.min_size)
+            relaxed = self._raw_detect(self.relaxed_cascade, enhanced, self.relaxed_scale_factor,
+                                        self.relaxed_min_neighbors, self.relaxed_min_size)
+        frame_mean = float(gray.mean())
+        strict = [b for b in strict
+                  if self._looks_like_a_face(gray, b, frame_mean, self.strict_min_std)]
+        relaxed = [b for b in relaxed if self._looks_like_a_face(gray, b, frame_mean)]
 
         # Largest first, so the dedup pass below keeps the bigger/cleaner box of any pair.
         candidates = sorted(strict + relaxed, key=lambda b: b[2] * b[3], reverse=True)
         faces = self._suppress_duplicates(candidates)
         return [tuple(map(int, b)) for b in faces]
 
-    def _looks_like_a_face(self, gray, box):
-        """Reject flat/featureless fallback-pass boxes (background) -- see module docstring
-        for the std >= 40 (real) vs std <= 11 (background) split this threshold is based on."""
+    @staticmethod
+    def _unscale(box, scale):
+        return tuple(int(round(v / scale)) for v in box)
+
+    def _looks_like_a_face(self, gray, box, frame_mean, min_std=None):
+        """Reject flat/featureless boxes (background) -- see module docstring for the
+        std >= 40 (real) vs std <= 12 (background) split this threshold is based on --
+        and boxes much darker than the frame as a whole (a face is warm)."""
         x, y, w, h = box
-        roi = gray[y:y + h, x:x + w]
-        return roi.size > 0 and roi.std() >= self.relaxed_min_std
+        roi = gray[max(0, y):y + h, max(0, x):x + w]
+        if roi.size == 0:
+            return False
+        threshold = self.relaxed_min_std if min_std is None else min_std
+        if roi.std() < threshold:
+            return False
+        return (self.min_rel_brightness is None
+                or roi.mean() >= frame_mean + self.min_rel_brightness)
 
     @staticmethod
     def _raw_detect(cascade, enhanced, scale_factor, min_neighbors, min_size):
@@ -290,11 +341,21 @@ class MultiFaceTracker:
     single person. collect_data.py still uses the plain single-target
     FaceTracker directly — enrollment/capture is inherently one person at a
     time, so there's nothing for multi-target tracking to do there.
+
+    A new track is only returned (so only drawn and named) once it has been
+    matched in `min_hits` frames; until then it is tracked quietly, and it is
+    dropped as soon as it goes unmatched for more than `max_unconfirmed_missed`
+    frames. A false detection on the background usually shows up for a single
+    frame or flickers on and off, so it never gets shown, while a real face is
+    confirmed after a fraction of a second. min_hits=1 gives the old behaviour.
     """
 
     def __init__(self, max_missed_frames: int = 10, max_center_frac: float = 0.6,
-                 alpha: float = 0.3, reject_streak_limit: int = 3):
+                 alpha: float = 0.3, reject_streak_limit: int = 3,
+                 min_hits: int = 5, max_unconfirmed_missed: int = 2):
         self.max_missed_frames = max_missed_frames
+        self.min_hits = min_hits
+        self.max_unconfirmed_missed = max_unconfirmed_missed
         self.max_center_frac = max_center_frac
         self._tracker_kwargs = dict(alpha=alpha, max_center_frac=max_center_frac,
                                      reject_streak_limit=reject_streak_limit)
@@ -304,9 +365,10 @@ class MultiFaceTracker:
     def update(self, boxes):
         """
         boxes: this frame's detector.detect() output (any order), or [].
-        Returns {track_id: box} for every currently active track (boxes
-        that weren't matched this frame keep showing their last known
-        position until max_missed_frames is exceeded).
+        Returns {track_id: box} for every currently active, confirmed track
+        (boxes that weren't matched this frame keep showing their last known
+        position until max_missed_frames is exceeded). Tracks that haven't
+        yet been matched in min_hits frames are not included.
         """
         unmatched = list(boxes)
         matched_ids = set()
@@ -325,19 +387,23 @@ class MultiFaceTracker:
                 matched_box = unmatched.pop(best_idx)
                 track["tracker"].update([matched_box])
                 track["missed"] = 0
+                track["hits"] += 1
                 matched_ids.add(track_id)
 
         for track_id in list(self.tracks.keys()):
             if track_id not in matched_ids:
-                self.tracks[track_id]["missed"] += 1
-                if self.tracks[track_id]["missed"] > self.max_missed_frames:
+                track = self.tracks[track_id]
+                track["missed"] += 1
+                limit = (self.max_missed_frames if track["hits"] >= self.min_hits
+                         else self.max_unconfirmed_missed)
+                if track["missed"] > limit:
                     del self.tracks[track_id]
 
         for cand in unmatched:
             tracker = FaceTracker(**self._tracker_kwargs)
             tracker.update([cand])
-            self.tracks[self._next_id] = {"tracker": tracker, "missed": 0}
+            self.tracks[self._next_id] = {"tracker": tracker, "missed": 0, "hits": 1}
             self._next_id += 1
 
         return {tid: t["tracker"].box for tid, t in self.tracks.items()
-                if t["tracker"].box is not None}
+                if t["tracker"].box is not None and t["hits"] >= self.min_hits}

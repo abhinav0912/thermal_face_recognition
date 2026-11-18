@@ -1,0 +1,15 @@
+# Images skipped by train.py (files stay on disk). One name per line.
+# Found 2026-11-02: these are blank wall / background crops (or a saturated close-up)
+# saved under a person's id, not usable face images.
+120-TD-A-215.jpg
+120-TD-A-216.jpg
+120-TD-A-217.jpg
+120-TD-A-218.jpg
+121-TD-A-40.jpg
+121-TD-A-52.jpg
+121-TD-A-58.jpg
+123-TD-A-26.jpg
+123-TD-A-27.jpg
+123-TD-A-28.jpg
+123-TD-A-29.jpg
+123-TD-A-30.jpg

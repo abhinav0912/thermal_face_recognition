@@ -46,6 +46,7 @@ import gallery
 from camera import ThermalCamera, DEFAULT_RTSP_URL
 from face_detector import ThermalFaceDetector, MultiFaceTracker
 from inference import FaceRecognizer
+from label_smoother import LabelSmoother, decide, format_label
 
 WINDOW_NAME = "Thermal Face Recognition"
 DISPLAY_SCALE = 1.6  # upscale factor for the preview window only -- detection/inference still run at native camera resolution
@@ -120,6 +121,7 @@ def run(args):
     recognizer = FaceRecognizer(args.checkpoint_dir, device=args.device)
     detector = ThermalFaceDetector()
     tracker = MultiFaceTracker()
+    smoother = None if args.no_smoothing else LabelSmoother()
     camera = ThermalCamera(source=args.source)
     gallery_data = gallery.load_gallery(args.gallery_path)
 
@@ -148,29 +150,25 @@ def run(args):
             # face's embedding from that same pass, so a low-confidence face
             # doesn't need a second backbone pass for the gallery fallback
             # either). See inference.py's FaceRecognizer.predict_batch.
-            boxes, crops = [], []
-            for box in tracks.values():
+            ids, boxes, crops = [], [], []
+            for tid, box in tracks.items():
                 crop = detector.crop(frame, box)
                 if crop.size == 0:
                     continue
+                ids.append(tid)
                 boxes.append(box)
                 crops.append(Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
 
-            for box, (result, embedding) in zip(boxes, recognizer.predict_batch(crops, top_k=1)):
-                if result["person_conf"] >= args.unknown_threshold:
-                    person_label = f"{result['person_name']} ({result['person_conf']*100:.0f}%)"
-                else:
-                    # The trained classifier isn't confident -- fall back
-                    # to the live-enrolled gallery before giving up.
-                    gallery_name, sim = gallery.match(
-                        embedding, gallery_data, threshold=args.gallery_threshold)
-                    if gallery_name:
-                        person_label = f"{gallery_name} ({sim*100:.0f}% live-match)"
-                    else:
-                        person_label = "Unknown"
+            # Trained classifier if confident, else the live-enrolled gallery, else Unknown
+            # (see label_smoother.decide), then steadied over the last few frames per face.
+            decisions = [decide(result, embedding, gallery_data,
+                                args.unknown_threshold, args.gallery_threshold)
+                         for result, embedding in recognizer.predict_batch(crops, top_k=1)]
+            if smoother is not None:
+                decisions = smoother.update(ids, decisions)
+            for box, decision in zip(boxes, decisions):
                 # expr_label = f"{result['expression']} ({result['expr_conf']*100:.0f}%)"  -- expression disabled
-
-                annotate(frame, box, person_label)
+                annotate(frame, box, format_label(decision)[0])
 
             cv2.putText(frame, "n = enroll new person   q = quit", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
@@ -207,6 +205,9 @@ if __name__ == "__main__":
                         help="Where live-enrolled people are stored")
     parser.add_argument("--gallery_threshold", type=float, default=0.6,
                         help="Minimum cosine similarity to accept a gallery match")
+    parser.add_argument("--no_smoothing", action="store_true",
+                        help="Show each frame's raw answer instead of steadying names over "
+                             "the last ~15 frames (see label_smoother.py)")
     parser.add_argument("--device", default=None,
                         help="Force 'cpu' or 'cuda'. Defaults to cuda if available. "
                              "Use --device cpu to work around a GPU that PyTorch "

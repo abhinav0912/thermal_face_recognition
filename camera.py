@@ -51,6 +51,7 @@ class ThermalCamera:
         self.cap = None
         self._frame_lock = threading.Lock()
         self._latest_frame = None
+        self.frame_id = 0  # bumps on every newly decoded frame, so consumers can skip re-processing a frame they've already seen
         self._stop = threading.Event()
 
         self._open()  # synchronous on construction, same as before: fail fast if the source is bad
@@ -88,6 +89,7 @@ class ThermalCamera:
                 continue
             with self._frame_lock:
                 self._latest_frame = frame
+                self.frame_id += 1
 
     def read(self):
         """Return (ok, frame_bgr) -- the most recently decoded frame, without blocking."""

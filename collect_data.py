@@ -23,6 +23,11 @@ Flow:
          focus, revisit next month; search "expression disabled" below)
     3. Repeat for more people/sessions, or 'q' at the person-ID prompt to exit.
 
+Each capture is logged as a session in data/sessions.jsonl (who, when, which frame
+numbers, sunglasses yes/no, a note), so train.py --split_mode session can hold out a
+whole recording as a test. Record several separate sessions per person (different
+days, distances, with/without sunglasses) -- one session cannot be held out.
+
 Saved images land in data/thermal-face-128x128/ as {id}-TD-A-{n}.jpg or
 {id}-TD-E-{1..5}.jpg, matching what train.py's ThermalFaceDataset parses.
 Raw videos are also kept in data/videos/ for reference/re-processing.
@@ -30,9 +35,11 @@ Person names are stored in data/person_names.json (see person_names.py).
 """
 
 import argparse
+import json
 import os
 import re
 import time
+from datetime import datetime
 
 import cv2
 
@@ -43,6 +50,22 @@ from person_names import load_names, set_name, DEFAULT_NAMES_PATH
 
 IMG_SIZE = 128
 DISPLAY_SCALE = 1.6  # upscale factor for preview windows only -- captured/saved crops are unaffected
+DEFAULT_SESSIONS_PATH = os.path.join("data", "sessions.jsonl")
+
+
+def log_session(path, entry):
+    """Append one capture session (a JSON line) to the session log. train.py can then hold
+    out a whole session for validation; see train.py's --split_mode session."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def ask_session_meta():
+    """Conditions that change how a face looks to the camera, stored with the session."""
+    glasses = input("  Wearing sunglasses/glasses this session? [y/N]: ").strip().lower().startswith("y")
+    note = input("  Note (distance, lighting, anything unusual; Enter to skip): ").strip()
+    return {"sunglasses": glasses, "note": note}
 
 
 def _show(window_name, frame):
@@ -85,26 +108,32 @@ def capture_one(camera, detector, window_name):
 
 
 def save_image(img, out_dir, person_id, mode, idx):
+    """Returns True if the image was written."""
     fname = f"{person_id}-TD-{mode}-{idx}.jpg"
     path = os.path.join(out_dir, fname)
     if os.path.exists(path):
         resp = input(f"  {fname} already exists. Overwrite? [y/N]: ").strip().lower()
         if resp != "y":
             print("  Skipped.")
-            return
+            return False
     cv2.imwrite(path, img)
     print(f"  Saved {fname}")
+    return True
 
 
 def run_angle_session(camera, detector, out_dir, person_id):
+    """Returns the list of frame numbers saved."""
     print("\n-- Angle shots (9 poses) -- vary head angle slightly between captures --")
+    saved = []
     for idx in range(9):
         print(f"\nPose {idx + 1}/9")
         img = capture_one(camera, detector, "Collect: Angle Shots")
         if img is None:
             print("  Stopped early.")
             break
-        save_image(img, out_dir, person_id, "A", idx)
+        if save_image(img, out_dir, person_id, "A", idx):
+            saved.append(idx)
+    return saved
 
 
 # -- Expression-shot capture disabled (not a current focus) -----------------
@@ -193,7 +222,7 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
     window_name = "Collect: Video"
     tracker = FaceTracker()
     if not wait_for_start(camera, detector, tracker, window_name):
-        return
+        return None
 
     ok, frame = camera.read()
     while not ok or frame is None:
@@ -228,8 +257,12 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
             break
 
         if frame_i % frame_interval == 0:
-            box = tracker.update(detector.detect(frame))
-            if box is not None:
+            boxes = detector.detect(frame)
+            box = tracker.update(boxes)
+            # Only save when a face was actually found in THIS frame. The tracker keeps
+            # returning its last box after the face leaves the frame, and saving that box
+            # put crops of empty background into the training set (e.g. 120-TD-A-215..218).
+            if boxes and box is not None:
                 crop = detector.crop(frame, box)
                 if crop.size > 0:
                     resized = cv2.resize(crop, (IMG_SIZE, IMG_SIZE))
@@ -243,6 +276,10 @@ def run_video_session(camera, detector, out_dir, person_id, video_dir,
     print(f"  Saved video: {video_path}")
     print(f"  Extracted {saved} training frames "
           f"({person_id}-TD-A-{start_idx}.jpg .. {person_id}-TD-A-{start_idx + max(saved - 1, 0)}.jpg)")
+    if not saved:
+        return None
+    return {"video": os.path.basename(video_path),
+            "first_frame": start_idx, "last_frame": start_idx + saved - 1}
 
 
 def main(args):
@@ -274,15 +311,25 @@ def main(args):
                     print(f"  Registered '{name}' as person {person_id}.")
 
             mode = input("Capture [v]ideo or [a]ngle shots?: ").strip().lower()
+            if not (mode.startswith("v") or mode.startswith("a")):   # expression capture disabled
+                print("  Please enter 'v' or 'a'.")
+                continue
+            meta = ask_session_meta()
+            started = datetime.now().isoformat(timespec="seconds")
             if mode.startswith("v"):
-                run_video_session(camera, detector, args.data_dir, person_id, args.video_dir,
-                                   duration_sec=args.duration)
-            elif mode.startswith("a"):
-                run_angle_session(camera, detector, args.data_dir, person_id)
+                result = run_video_session(camera, detector, args.data_dir, person_id, args.video_dir,
+                                            duration_sec=args.duration)
+            else:
+                frames = run_angle_session(camera, detector, args.data_dir, person_id)
+                result = {"frame_list": frames} if frames else None
             # elif mode.startswith("e"):  -- expression capture disabled
             #     run_expression_session(camera, detector, args.data_dir, person_id)
-            else:
-                print("  Please enter 'v' or 'a'.")
+            if result:
+                entry = {"session_id": f"{person_id}_{started}", "person_id": int(person_id),
+                         "mode": "video" if mode.startswith("v") else "angle",
+                         "started": started, **meta, **result}
+                log_session(args.sessions_path, entry)
+                print(f"  Logged session {entry['session_id']} in {args.sessions_path}")
     finally:
         camera.release()
         cv2.destroyAllWindows()
@@ -299,6 +346,8 @@ if __name__ == "__main__":
                         help="Where raw recorded videos are kept")
     parser.add_argument("--names_path", default=DEFAULT_NAMES_PATH,
                         help="Where the person_id -> name registry is stored")
+    parser.add_argument("--sessions_path", default=DEFAULT_SESSIONS_PATH,
+                        help="Log of capture sessions (who, when, which frames, sunglasses)")
     parser.add_argument("--duration", type=float, default=15.0,
                         help="Seconds to record per video capture session")
     args = parser.parse_args()
